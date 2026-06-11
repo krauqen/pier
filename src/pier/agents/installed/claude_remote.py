@@ -11,6 +11,29 @@ from pier.models.agent.name import AgentName
 from pier.models.agent.network import NetworkAllowlist
 
 
+def _squid_policy_domains(allowlist: NetworkAllowlist) -> list[str]:
+    """Return a Squid dstdomain-compatible allowlist for Claude Remote."""
+    domains = set(allowlist.domains)
+    suffixes = {domain for domain in domains if domain.startswith(".")}
+
+    filtered: list[str] = []
+    for domain in sorted(domains):
+        if domain.startswith("."):
+            apex = domain[1:]
+            if any(
+                other != domain and apex.endswith(other)
+                for other in suffixes
+            ):
+                continue
+        elif any(
+            domain == suffix[1:] or domain.endswith(suffix)
+            for suffix in suffixes
+        ):
+            continue
+        filtered.append(domain)
+    return filtered
+
+
 class ClaudeRemote(ClaudeCode):
     """Claude Code in interactive mode with Claude Remote Control enabled.
 
@@ -104,14 +127,16 @@ class ClaudeRemote(ClaudeCode):
         # Remote Control relays the session through Anthropic infrastructure
         # beyond the inference endpoint, so widen the inference-only allowlist.
         base = super().network_allowlist()
+        domains = [
+            *base.domains,
+            ".anthropic.com",
+            "claude.ai",
+            ".claude.ai",
+            ".claude.com",
+        ]
         return NetworkAllowlist(
-            domains=[
-                *base.domains,
-                ".anthropic.com",
-                "claude.ai",
-                ".claude.ai",
-                ".claude.com",
-            ]
+            domains=domains,
+            proxy_domains=_squid_policy_domains(NetworkAllowlist(domains=domains)),
         )
 
     def _resolve_credentials_json(self) -> str | None:

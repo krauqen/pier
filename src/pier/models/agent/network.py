@@ -11,10 +11,19 @@ class NetworkAllowlist(BaseModel):
             "for example 'api.anthropic.com' or '.anthropic.com'."
         ),
     )
+    proxy_domains: list[str] | None = Field(
+        default=None,
+        description=(
+            "Optional domain policy for HTTP proxy ACLs when it must differ "
+            "from the broader agent network allowlist."
+        ),
+    )
 
-    @field_validator("domains")
+    @field_validator("domains", "proxy_domains")
     @classmethod
-    def normalize_domains(cls, domains: list[str]) -> list[str]:
+    def normalize_domains(cls, domains: list[str] | None) -> list[str] | None:
+        if domains is None:
+            return None
         normalized: set[str] = set()
         for value in domains:
             domain = value.strip().lower().rstrip(".")

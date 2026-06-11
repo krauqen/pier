@@ -110,7 +110,8 @@ def test_claude_remote_network_allowlist_includes_remote_control_domains(
 ):
     agent = ClaudeRemote(logs_dir=tmp_path)
 
-    domains = set(agent.network_allowlist().domains)
+    allowlist = agent.network_allowlist()
+    domains = set(allowlist.domains)
 
     assert {
         "api.anthropic.com",
@@ -119,6 +120,7 @@ def test_claude_remote_network_allowlist_includes_remote_control_domains(
         ".claude.ai",
         ".claude.com",
     } <= domains
+    assert allowlist.proxy_domains == [".anthropic.com", ".claude.ai", ".claude.com"]
 
 
 CREDENTIALS = '{"claudeAiOauth": {"accessToken": "full-scope", "scopes": ["user:inference", "user:profile"]}}'

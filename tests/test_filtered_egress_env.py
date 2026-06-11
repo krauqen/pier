@@ -1,19 +1,18 @@
 import asyncio
 import json
 
+from pier.models.agent.network import NetworkAllowlist
 from pier.environments.agent_setup import (
     EGRESS_PROXY_PORT,
     EGRESS_PROXY_SERVICE,
     docker_run_command,
     proxy_environment,
     proxy_policy_env,
-    squid_policy_domains,
     write_docker_proxy_compose,
 )
 from pier.environments.base import ExecResult
 from pier.environments.docker.docker import DockerEnvironment
 from pier.environments.modal import ModalEnvironment, _ModalDinD, _ModalDirect
-from pier.models.agent.network import NetworkAllowlist
 
 
 def test_docker_proxy_compose_does_not_inject_proxy_env_into_main(tmp_path):
@@ -32,26 +31,25 @@ def test_docker_proxy_compose_does_not_inject_proxy_env_into_main(tmp_path):
     assert EGRESS_PROXY_SERVICE in main["depends_on"]
 
 
-def test_squid_policy_domains_prefers_suffix_over_apex_domains():
+def test_proxy_policy_env_uses_allowlist_domains_unchanged():
+    allowlist = type(
+        "Allowlist",
+        (),
+        {"domains": [".anthropic.com", "api.anthropic.com", "claude.ai"]},
+    )()
+
+    env = proxy_policy_env(allowlist, "secret")
+
+    assert env == {
+        "PROXY_TOKEN": "secret",
+        "ALLOWLIST_DOMAINS": ".anthropic.com,api.anthropic.com,claude.ai",
+    }
+
+
+def test_proxy_policy_env_uses_proxy_domains_when_present():
     allowlist = NetworkAllowlist(
-        domains=[
-            ".anthropic.com",
-            "api.anthropic.com",
-            "claude.ai",
-            ".claude.ai",
-            ".api.claude.ai",
-        ]
-    )
-
-    assert squid_policy_domains(allowlist) == [
-        ".anthropic.com",
-        ".claude.ai",
-    ]
-
-
-def test_proxy_policy_env_uses_squid_safe_domain_list():
-    allowlist = NetworkAllowlist(
-        domains=[".anthropic.com", "api.anthropic.com", "claude.ai", ".claude.ai"]
+        domains=[".anthropic.com", "api.anthropic.com", "claude.ai", ".claude.ai"],
+        proxy_domains=[".anthropic.com", ".claude.ai"],
     )
 
     env = proxy_policy_env(allowlist, "secret")

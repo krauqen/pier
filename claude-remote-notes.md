@@ -12,11 +12,18 @@ The variant that made the Claude Code UI show the remote session used:
   - `claude.ai`
   - `.claude.ai`
   - `.claude.com`
-- generic Squid policy normalization in `pier.environments.agent_setup.proxy_policy_env()`.
+- `ClaudeRemote.network_allowlist().proxy_domains` returning the Squid-safe
+  proxy policy:
+  - `.anthropic.com`
+  - `.claude.ai`
+  - `.claude.com`
 - generated proxy `ALLOWLIST_DOMAINS`:
   - `.anthropic.com,.claude.ai,.claude.com`
 
-The normalization matters because Squid can fail or behave inconsistently with overlapping `dstdomain` ACL entries. For example, `.claude.ai` should win over `claude.ai`, and `.anthropic.com` should win over `api.anthropic.com`.
+The Claude Remote-specific normalization matters because Squid can fail or
+behave inconsistently with overlapping `dstdomain` ACL entries. For example,
+`.claude.ai` should win over `claude.ai`, and `.anthropic.com` should win over
+`api.anthropic.com`.
 
 Observed allowed traffic in the working run:
 
@@ -49,7 +56,8 @@ However, the Claude Code UI did not show the Remote Control session in at least 
 Prefer the working variant for now:
 
 - keep `claude-remote` broad at the agent allowlist layer.
-- normalize overlapping domains at the Squid policy layer.
+- set Claude Remote-specific proxy domains from `ClaudeRemote.network_allowlist()`;
+  leave the shared Squid policy layer unchanged for other agents.
 - preseed `remoteDialogSeen: true` in `.claude.json`. Without this, Claude
   Code can stop at the first-use Remote Control dialog inside Pier's hidden PTY;
   the job keeps running, but the session never reaches `/rc active` or appears
