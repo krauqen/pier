@@ -19,7 +19,7 @@ Pier is a fork. We wanted a smaller, more opinionated base to build on. On top o
 
 - **Task format:** Harbor-compatible.
 - **Environments:** `docker`, `modal`. Per-agent install specs and network allowlists are honored on both, so installed agents work under `allow_internet = false`.
-- **Agents:** `nop`, `oracle`, `claude-code`, `codex`, `cursor-cli`, `gemini-cli`, `opencode`, `mini-swe-agent`. All emit augmented ATIF v1.7.
+- **Agents:** `nop`, `oracle`, `claude-code`, `claude-remote`, `codex`, `cursor-cli`, `gemini-cli`, `opencode`, `mini-swe-agent`. All emit augmented ATIF v1.7.
 - **Datasets:** local Harbor-format task directories via `-p` / `--path`.
 - **CLI:** `pier run`, `pier job`, `pier view`, `pier critique run`, `pier check` / `pier analyze` (vendored from Harbor)
 
@@ -73,6 +73,69 @@ A few things we've learned plumbing this through Respan and OpenRouter:
     ANTHROPIC_CUSTOM_HEADERS: "X-Respan-Route-Provider: vertex_ai"
   kwargs:
     reasoning_effort: max
+```
+
+**Claude Remote** (`--agent claude-remote`) runs Claude Code interactively with
+[Claude Remote Control](https://docs.claude.com/en/docs/claude-code) enabled, so a
+human can attach to (or take over) the live session from claude.ai or the Claude
+mobile app while the trial is running. It reuses the entire `claude-code` setup
+(install, env, session dir, skills/memory/MCP registration, network allowlist,
+trajectory conversion); the only difference is the launch: no `--print`, no
+`--output-format=stream-json`, stdin kept open, and `--remote-control` plus a
+deterministic `--session-id` passed so Pier can locate the session JSONL
+afterwards. Pier blocks until the interactive session exits (quit Claude Code
+from the attached client, or let the agent timeout fire), then proceeds with the
+usual post-run flow: log download, `trajectory.json` conversion, verification,
+and artifact collection. Notes:
+
+- Pier's environment exec path does not allocate a TTY, so the agent allocates a
+  pseudo-TTY *inside* the container via the `script` utility (util-linux; on
+  Alpine images it is installed automatically, and the run fails loudly if
+  `script` is missing). The in-container terminal is headless — interact through
+  Remote Control only.
+- Interactive mode never emits a final stream-json `result` event, so
+  `total_cost_usd` is absent from final metrics; this is expected and not an
+  error. Terminal output is teed to `logs/agent/claude-remote.txt`.
+- Under `allow_internet = false`, the allowlist is widened beyond the inference
+  endpoint (`.anthropic.com`, `claude.ai`) so the Remote Control relay works.
+- The agent `timeout_sec` still applies — raise it (or
+  `--agent-timeout-multiplier`) to leave time for a human to attach.
+
+**Authentication.** Remote Control requires a *full-scope login* credential.
+API keys and long-lived tokens (`claude setup-token` / `CLAUDE_CODE_OAUTH_TOKEN`)
+are inference-only and `--remote-control` rejects them. Run `claude auth login`
+on a trusted machine, then hand the resulting credential to the trial:
+
+```bash
+# Linux: credentials live in the Claude config dir
+export CLAUDE_CODE_CREDENTIALS_FILE=~/.claude/.credentials.json
+# macOS: credentials live in the Keychain
+export CLAUDE_CODE_CREDENTIALS_JSON="$(security find-generic-password -s 'Claude Code-credentials' -w)"
+```
+
+(or pass `kwargs.credentials_json` / `kwargs.credentials_file` in the agent
+config). Pier writes it to `$CLAUDE_CONFIG_DIR/.credentials.json` (mode 600)
+during setup and removes it when the session's shell exits, so the token —
+including any refresh token Claude Code rotates into that file — does not
+persist into the downloaded job logs. Caveats:
+
+- A hard kill (SIGKILL / container teardown mid-run) skips the cleanup trap and
+  can leave the credential in `logs/agent/sessions/`; treat job logs from
+  aborted remote runs as sensitive.
+- When a credential is injected, env-based auth (`ANTHROPIC_API_KEY`,
+  `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`) is dropped from the
+  process env — otherwise it would take precedence and put the session back
+  into inference-only mode. Usage bills to the logged-in account's plan, and
+  `ANTHROPIC_BASE_URL` gateway setups don't combine with Remote Control.
+- Without a credential, the run starts but Claude Code refuses
+  `--remote-control`; Pier logs a warning up front.
+
+```yaml
+- name: claude-remote
+  model_name: claude-opus-4-7
+  kwargs:
+    session_id: 1f1597e6-0eb9-4763-9bb4-25ed35a3c721  # optional, any UUID; auto-generated when omitted
+    credentials_file: ~/.claude/.credentials.json     # or credentials_json: '{"claudeAiOauth": ...}'
 ```
 
 **Codex** needs a `[model_providers.<name>]` block with `wire_api = "responses"` (not WebSockets, which Codex defaults to and Respan doesn't speak).

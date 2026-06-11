@@ -2,7 +2,7 @@ import json
 import os
 import shlex
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from urllib.parse import urlparse
 
 from pier.agents.installed.base import (
@@ -38,6 +38,9 @@ from pier.utils.trajectory_metrics import (
 class ClaudeCode(BaseInstalledAgent):
     SUPPORTS_ATIF: bool = True
     memory_dir: str | None
+
+    # Filename (under /logs/agent) that the claude CLI output is teed to.
+    STREAM_LOG_FILENAME: ClassVar[str] = "claude-code.txt"
 
     CLI_FLAGS = [
         CliFlag(
@@ -669,8 +672,9 @@ class ClaudeCode(BaseInstalledAgent):
         ``{"type":"result", ..., "total_cost_usd": <float>, ...}`` line to stdout,
         which Pier tees to ``<logs_dir>/claude-code.txt``. Returns ``None`` if
         the file is missing, malformed, or the result event lacks the field.
+        Interactive modes never emit the result event, so this stays optional.
         """
-        stream_path = self.logs_dir / "claude-code.txt"
+        stream_path = self.logs_dir / self.STREAM_LOG_FILENAME
         try:
             content = stream_path.read_text(encoding="utf-8")
         except OSError:
@@ -1094,7 +1098,7 @@ class ClaudeCode(BaseInstalledAgent):
             schema_version="ATIF-v1.7",
             session_id=session_id,
             agent=Agent(
-                name=AgentName.CLAUDE_CODE.value,
+                name=self.name(),
                 version=agent_version,
                 model_name=default_model_name,
                 extra=agent_extra,
@@ -1202,12 +1206,8 @@ class ClaudeCode(BaseInstalledAgent):
             return True
         return False
 
-    @with_prompt_template
-    async def run(
-        self, instruction: str, environment: BaseEnvironment, context: AgentContext
-    ) -> None:
-        escaped_instruction = shlex.quote(instruction)
-
+    def _build_run_env(self) -> dict[str, str]:
+        """Build the process environment shared by all Claude Code run modes."""
         use_bedrock = self._is_bedrock_mode()
 
         env = {
@@ -1303,6 +1303,10 @@ class ClaudeCode(BaseInstalledAgent):
 
         env["CLAUDE_CONFIG_DIR"] = (EnvironmentPaths.agent_dir / "sessions").as_posix()
 
+        return env
+
+    def _build_setup_command(self) -> str:
+        """Build the command that creates config dirs and registers skills/memory/MCP."""
         setup_command = (
             "mkdir -p $CLAUDE_CONFIG_DIR/debug $CLAUDE_CONFIG_DIR/projects/-app "
             "$CLAUDE_CONFIG_DIR/shell-snapshots $CLAUDE_CONFIG_DIR/statsig "
@@ -1324,23 +1328,41 @@ class ClaudeCode(BaseInstalledAgent):
         if mcp_command:
             setup_command += f" && {mcp_command}"
 
+        return setup_command
+
+    def _build_claude_command(self, escaped_instruction: str, extra_flags: str) -> str:
+        """Build the command that launches the claude CLI.
+
+        Subclasses override this to launch Claude Code in a different mode
+        (e.g. interactive remote control) while reusing env/setup logic.
+        """
+        return (
+            'export PATH="$HOME/.local/bin:$PATH"; '
+            f"claude --verbose --output-format=stream-json "
+            f"--permission-mode=bypassPermissions "
+            f"{extra_flags}"
+            f"--print -- {escaped_instruction} 2>&1 </dev/null | tee "
+            f"/logs/agent/{self.STREAM_LOG_FILENAME}"
+        )
+
+    @with_prompt_template
+    async def run(
+        self, instruction: str, environment: BaseEnvironment, context: AgentContext
+    ) -> None:
+        escaped_instruction = shlex.quote(instruction)
+
+        env = self._build_run_env()
+
         cli_flags = self.build_cli_flags()
         extra_flags = (cli_flags + " ") if cli_flags else ""
 
         await self.exec_as_agent(
             environment,
-            command=setup_command,
+            command=self._build_setup_command(),
             env=env,
         )
         await self.exec_as_agent(
             environment,
-            command=(
-                'export PATH="$HOME/.local/bin:$PATH"; '
-                f"claude --verbose --output-format=stream-json "
-                f"--permission-mode=bypassPermissions "
-                f"{extra_flags}"
-                f"--print -- {escaped_instruction} 2>&1 </dev/null | tee "
-                f"/logs/agent/claude-code.txt"
-            ),
+            command=self._build_claude_command(escaped_instruction, extra_flags),
             env=env,
         )

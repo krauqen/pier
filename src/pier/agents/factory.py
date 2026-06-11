@@ -3,6 +3,7 @@ from pathlib import Path
 
 from pier.agents.base import BaseAgent
 from pier.agents.installed.claude_code import ClaudeCode
+from pier.agents.installed.claude_remote import ClaudeRemote
 from pier.agents.installed.codex import Codex
 from pier.agents.installed.cursor_cli import CursorCli
 from pier.agents.installed.gemini_cli import GeminiCli
@@ -20,6 +21,7 @@ class AgentFactory:
         NopAgent,
         OracleAgent,
         ClaudeCode,
+        ClaudeRemote,
         Codex,
         CursorCli,
         GeminiCli,
