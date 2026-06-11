@@ -134,10 +134,38 @@ exec squid -N -f /tmp/squid.conf -d 1
 """
 
 
+def squid_policy_domains(allowlist: NetworkAllowlist) -> list[str]:
+    """Return a Squid dstdomain-compatible allowlist.
+
+    Squid rejects overlapping dstdomain ACL entries, so keep only the broadest
+    entries before writing the ACL file. A leading-dot suffix entry such as
+    ".claude.ai" covers both the apex and subdomains for Squid policy.
+    """
+    domains = set(allowlist.domains)
+    suffixes = {domain for domain in domains if domain.startswith(".")}
+
+    filtered: list[str] = []
+    for domain in sorted(domains):
+        if domain.startswith("."):
+            apex = domain[1:]
+            if any(
+                other != domain and apex.endswith(other)
+                for other in suffixes
+            ):
+                continue
+        elif any(
+            domain == suffix[1:] or domain.endswith(suffix)
+            for suffix in suffixes
+        ):
+            continue
+        filtered.append(domain)
+    return filtered
+
+
 def proxy_policy_env(allowlist: NetworkAllowlist, token: str) -> dict[str, str]:
     return {
         "PROXY_TOKEN": token,
-        "ALLOWLIST_DOMAINS": ",".join(allowlist.domains),
+        "ALLOWLIST_DOMAINS": ",".join(squid_policy_domains(allowlist)),
     }
 
 

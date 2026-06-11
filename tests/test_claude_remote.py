@@ -33,6 +33,8 @@ def test_claude_remote_command_is_interactive_with_remote_control(tmp_path: Path
     command = agent._build_claude_command(shlex.quote("fix the bug"), "")
 
     assert "--remote-control" in command
+    assert "--dangerously-skip-permissions" in command
+    assert "--permission-mode=bypassPermissions" not in command
     assert f"--session-id {agent.claude_session_id}" in command
     assert "'fix the bug'" in command
     assert "tee /logs/agent/claude-remote.txt" in command
@@ -110,7 +112,13 @@ def test_claude_remote_network_allowlist_includes_remote_control_domains(
 
     domains = set(agent.network_allowlist().domains)
 
-    assert {"api.anthropic.com", ".anthropic.com", "claude.ai", ".claude.ai"} <= domains
+    assert {
+        "api.anthropic.com",
+        ".anthropic.com",
+        "claude.ai",
+        ".claude.ai",
+        ".claude.com",
+    } <= domains
 
 
 CREDENTIALS = '{"claudeAiOauth": {"accessToken": "full-scope", "scopes": ["user:inference", "user:profile"]}}'
@@ -124,8 +132,33 @@ def test_claude_remote_injects_credentials_into_setup(tmp_path: Path):
     assert "$CLAUDE_CONFIG_DIR/.credentials.json" in setup_command
     assert "umask 077" in setup_command
     assert "full-scope" in setup_command
+    assert "hasCompletedOnboarding" in setup_command
+    assert "hasTrustDialogAccepted" in setup_command
+    assert "tengu_disable_bypass_permissions_mode" in setup_command
+    assert "skipDangerousModePermissionPrompt" in setup_command
+    assert "/app" in setup_command
     # Base setup (dirs, skills copy) is preserved.
     assert "mkdir -p $CLAUDE_CONFIG_DIR/debug" in setup_command
+
+
+def test_claude_remote_preseeds_onboarding_without_credentials(tmp_path: Path):
+    agent = ClaudeRemote(logs_dir=tmp_path)
+
+    setup_command = agent._build_setup_command()
+
+    assert "hasCompletedOnboarding" in setup_command
+    assert ".credentials.json" not in setup_command
+
+
+def test_claude_remote_redacts_credentials_from_logged_commands(tmp_path: Path):
+    agent = ClaudeRemote(logs_dir=tmp_path, credentials_json=CREDENTIALS)
+
+    command = agent._build_setup_command()
+    redacted = agent._redact_command_for_logging(command)
+
+    assert "full-scope" in command
+    assert "full-scope" not in redacted
+    assert "[redacted-claude-credentials]" in redacted
 
 
 def test_claude_remote_credentials_drop_env_auth(tmp_path: Path):
@@ -143,6 +176,14 @@ def test_claude_remote_credentials_drop_env_auth(tmp_path: Path):
     assert "ANTHROPIC_API_KEY" not in env
     assert "ANTHROPIC_AUTH_TOKEN" not in env
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
+
+
+def test_claude_remote_keeps_remote_control_side_traffic_enabled(tmp_path: Path):
+    agent = ClaudeRemote(logs_dir=tmp_path, credentials_json=CREDENTIALS)
+
+    env = agent._build_run_env()
+
+    assert "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC" not in env
 
 
 def test_claude_remote_without_credentials_keeps_env_auth(tmp_path: Path):

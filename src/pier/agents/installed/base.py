@@ -304,6 +304,9 @@ class BaseInstalledAgent(BaseAgent, ABC):
             return text[:max_len] + " ... [truncated]"
         return text
 
+    def _redact_command_for_logging(self, command: str) -> str:
+        return command
+
     async def _exec(
         self,
         environment: BaseEnvironment,
@@ -322,8 +325,10 @@ class BaseInstalledAgent(BaseAgent, ABC):
             merged_env = dict(env) if env else {}
             merged_env.update(self._extra_env)
 
+        display_command = self._redact_command_for_logging(command)
+
         self.logger.debug(
-            f"Running command: {command}",
+            f"Running command: {display_command}",
             extra={
                 "user": str(user),
                 "env": merged_env or {},
@@ -347,7 +352,7 @@ class BaseInstalledAgent(BaseAgent, ABC):
                 },
             )
             raise NonZeroAgentExitCodeError(
-                f"Command failed (exit {result.return_code}): {command}\n"
+                f"Command failed (exit {result.return_code}): {display_command}\n"
                 f"stdout: {self._truncate_output(result.stdout)}\n"
                 f"stderr: {self._truncate_output(result.stderr)}"
             )

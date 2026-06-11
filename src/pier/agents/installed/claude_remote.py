@@ -1,4 +1,5 @@
 import json
+import re
 import shlex
 import uuid
 from pathlib import Path
@@ -104,7 +105,13 @@ class ClaudeRemote(ClaudeCode):
         # beyond the inference endpoint, so widen the inference-only allowlist.
         base = super().network_allowlist()
         return NetworkAllowlist(
-            domains=[*base.domains, ".anthropic.com", "claude.ai", ".claude.ai"]
+            domains=[
+                *base.domains,
+                ".anthropic.com",
+                "claude.ai",
+                ".claude.ai",
+                ".claude.com",
+            ]
         )
 
     def _resolve_credentials_json(self) -> str | None:
@@ -165,6 +172,10 @@ class ClaudeRemote(ClaudeCode):
 
     def _build_run_env(self) -> dict[str, str]:
         env = super()._build_run_env()
+        # Remote Control depends on Claude Code's relay/session side traffic.
+        # The base claude-code agent disables that traffic for deterministic
+        # headless runs, but doing so prevents remote attach from registering.
+        env.pop("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", None)
         if self._resolve_credentials_json():
             # Env-based auth takes precedence over the injected login
             # credential and is inference-only, which Remote Control rejects.
@@ -178,6 +189,44 @@ class ClaudeRemote(ClaudeCode):
 
     def _build_setup_command(self) -> str:
         setup_command = super()._build_setup_command()
+        # Remote Control runs headlessly behind an in-container PTY. A fresh
+        # Claude config can otherwise stop at the interactive first-run theme
+        # picker, with no terminal attached to answer it.
+        onboarding_config = shlex.quote(
+            json.dumps(
+                {
+                    "hasCompletedOnboarding": True,
+                    "lastOnboardingVersion": "2.1.158",
+                    "tengu_disable_bypass_permissions_mode": False,
+                    "projects": {
+                        "/app": {
+                            "allowedTools": [],
+                            "hasTrustDialogAccepted": True,
+                            "projectOnboardingSeenCount": 1,
+                        }
+                    },
+                },
+                separators=(",", ":"),
+            )
+        )
+        setup_command += (
+            " && if [ ! -s $CLAUDE_CONFIG_DIR/.claude.json ]; then "
+            f"printf '%s\\n' {onboarding_config} > $CLAUDE_CONFIG_DIR/.claude.json; "
+            "fi"
+        )
+        user_settings = shlex.quote(
+            json.dumps(
+                {
+                    "skipDangerousModePermissionPrompt": True,
+                },
+                separators=(",", ":"),
+            )
+        )
+        setup_command += (
+            " && if [ ! -s $CLAUDE_CONFIG_DIR/settings.json ]; then "
+            f"printf '%s\\n' {user_settings} > $CLAUDE_CONFIG_DIR/settings.json; "
+            "fi"
+        )
         credentials = self._resolve_credentials_json()
         if credentials:
             escaped = shlex.quote(credentials)
@@ -186,6 +235,15 @@ class ClaudeRemote(ClaudeCode):
                 f"echo {escaped} > $CLAUDE_CONFIG_DIR/.credentials.json)"
             )
         return setup_command
+
+    def _redact_command_for_logging(self, command: str) -> str:
+        command = super()._redact_command_for_logging(command)
+        return re.sub(
+            r"echo .+? > \$CLAUDE_CONFIG_DIR/\.credentials\.json",
+            "echo '[redacted-claude-credentials]' > "
+            "$CLAUDE_CONFIG_DIR/.credentials.json",
+            command,
+        )
 
     def _get_session_dir(self) -> Path | None:
         """Locate the session JSONL via the deterministic --session-id."""
@@ -205,7 +263,7 @@ class ClaudeRemote(ClaudeCode):
         # live interactive session driven through Remote Control.
         claude_command = (
             f"claude --verbose "
-            f"--permission-mode=bypassPermissions "
+            f"--dangerously-skip-permissions "
             f"--remote-control "
             f"{extra_flags}"
             f"--session-id {self.claude_session_id} "
