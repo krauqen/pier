@@ -315,9 +315,12 @@ class ClaudeRemote(ClaudeCode):
             "to allocate a PTY for interactive mode' >&2; exit 1; }; "
             # FIFO opened read-write on fd 9: reads block instead of hitting
             # EOF, keeping the interactive session's stdin open for its
-            # entire lifetime without feeding it any input.
+            # entire lifetime. The delayed command makes Remote Control enter
+            # /rc active reliably in hidden-PTY runs where --remote-control
+            # alone leaves the session detached.
             'pty_stdin="$(mktemp -u)" && mkfifo "$pty_stdin" && '
             'exec 9<>"$pty_stdin" && rm -f "$pty_stdin"; '
+            "(sleep 5; printf '/remote-control\\r' >&9) & "
             f"script -qefc {shlex.quote(claude_command)} /dev/null <&9 2>&1 | tee "
             f"/logs/agent/{self.STREAM_LOG_FILENAME}"
         )

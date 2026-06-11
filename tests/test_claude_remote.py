@@ -40,6 +40,7 @@ def test_claude_remote_command_is_interactive_with_remote_control(tmp_path: Path
     assert "tee /logs/agent/claude-remote.txt" in command
     # PTY is allocated in-container; the session must stay interactive.
     assert "script -qefc" in command
+    assert "printf '/remote-control\\r' >&9" in command
     assert "--print" not in command
     assert "--output-format=stream-json" not in command
     assert "</dev/null" not in command

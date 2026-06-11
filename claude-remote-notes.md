@@ -62,6 +62,9 @@ Prefer the working variant for now:
   Code can stop at the first-use Remote Control dialog inside Pier's hidden PTY;
   the job keeps running, but the session never reaches `/rc active` or appears
   in the Claude Code UI.
+- submit `/remote-control` into the hidden PTY after launch. `--remote-control`
+  is necessary but has not been sufficient by itself in repeated Docker runs;
+  the explicit slash command transitions the TUI to `/rc active`.
 - preseed `agentPushNotifEnabled: true` in `settings.json`, matching the state
   observed after accepting the Remote Control dialog in the working run.
 - verify every run by checking:
