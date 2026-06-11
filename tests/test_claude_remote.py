@@ -134,7 +134,9 @@ def test_claude_remote_injects_credentials_into_setup(tmp_path: Path):
     assert "full-scope" in setup_command
     assert "hasCompletedOnboarding" in setup_command
     assert "hasTrustDialogAccepted" in setup_command
+    assert "remoteDialogSeen" in setup_command
     assert "tengu_disable_bypass_permissions_mode" in setup_command
+    assert "agentPushNotifEnabled" in setup_command
     assert "skipDangerousModePermissionPrompt" in setup_command
     assert "/app" in setup_command
     # Base setup (dirs, skills copy) is preserved.
@@ -147,6 +149,8 @@ def test_claude_remote_preseeds_onboarding_without_credentials(tmp_path: Path):
     setup_command = agent._build_setup_command()
 
     assert "hasCompletedOnboarding" in setup_command
+    assert "remoteDialogSeen" in setup_command
+    assert "agentPushNotifEnabled" in setup_command
     assert ".credentials.json" not in setup_command
 
 

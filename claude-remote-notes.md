@@ -50,8 +50,15 @@ Prefer the working variant for now:
 
 - keep `claude-remote` broad at the agent allowlist layer.
 - normalize overlapping domains at the Squid policy layer.
+- preseed `remoteDialogSeen: true` in `.claude.json`. Without this, Claude
+  Code can stop at the first-use Remote Control dialog inside Pier's hidden PTY;
+  the job keeps running, but the session never reaches `/rc active` or appears
+  in the Claude Code UI.
+- preseed `agentPushNotifEnabled: true` in `settings.json`, matching the state
+  observed after accepting the Remote Control dialog in the working run.
 - verify every run by checking:
   - generated `docker-compose-egress-proxy.json`
   - `claude --remote-control` process args
   - `/logs/agent/sessions/sessions/*.json`
   - Squid `/tmp/squid_access.log`
+  - `agent/claude-remote.txt` contains `/rc active`

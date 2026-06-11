@@ -197,6 +197,7 @@ class ClaudeRemote(ClaudeCode):
                 {
                     "hasCompletedOnboarding": True,
                     "lastOnboardingVersion": "2.1.158",
+                    "remoteDialogSeen": True,
                     "tengu_disable_bypass_permissions_mode": False,
                     "projects": {
                         "/app": {
@@ -217,6 +218,7 @@ class ClaudeRemote(ClaudeCode):
         user_settings = shlex.quote(
             json.dumps(
                 {
+                    "agentPushNotifEnabled": True,
                     "skipDangerousModePermissionPrompt": True,
                 },
                 separators=(",", ":"),
