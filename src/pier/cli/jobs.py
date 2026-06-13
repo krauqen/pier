@@ -1,6 +1,8 @@
 import json
+import os
 import shutil
 import signal
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated
@@ -903,6 +905,40 @@ def interactive(
             rich_help_panel="Environment",
         ),
     ] = False,
+    install_codex: Annotated[
+        bool,
+        Option(
+            "--install-codex/--no-install-codex",
+            help="Install Codex CLI in the interactive SSH container.",
+            rich_help_panel="Interactive",
+        ),
+    ] = False,
+    ssh_user: Annotated[
+        str | None,
+        Option(
+            "--ssh-user",
+            help="SSH username to configure inside the container.",
+            rich_help_panel="Interactive",
+            show_default=False,
+        ),
+    ] = None,
+    public_key_path: Annotated[
+        Path | None,
+        Option(
+            "--interactive-public-key",
+            help="Existing public key to authorize instead of generating one.",
+            rich_help_panel="Interactive",
+            show_default=False,
+        ),
+    ] = None,
+    allow_root_login: Annotated[
+        bool,
+        Option(
+            "--allow-root-login/--no-allow-root-login",
+            help="Allow key-only root SSH login when --ssh-user root is used.",
+            rich_help_panel="Interactive",
+        ),
+    ] = False,
     poll_interval_sec: Annotated[
         float,
         Option(
@@ -983,7 +1019,7 @@ def interactive(
         ),
     ] = None,
 ):
-    """Start a no-SSH interactive trial that waits for finish or abort."""
+    """Start an interactive Docker SSH trial that waits for finish or abort."""
     from pier.job import Job
 
     if env_file is not None:
@@ -1007,12 +1043,18 @@ def interactive(
         config.verifier.disable = True
     config.agents = [
         AgentConfig(
-            name=AgentName.INTERACTIVE_LAB,
+            name=AgentName.INTERACTIVE_SSH,
             override_timeout_sec=wait_timeout_sec,
             kwargs={
                 "poll_interval_sec": poll_interval_sec,
                 "task_exposure": task_exposure.value,
                 "operator": operator,
+                "install_codex": install_codex,
+                "ssh_user": ssh_user,
+                "public_key_path": (
+                    str(public_key_path.expanduser()) if public_key_path else None
+                ),
+                "allow_root_login": allow_root_login,
             },
         )
     ]
@@ -1104,6 +1146,112 @@ def finish(
     else:
         console.print(f"Current status: {state.status.value}")
     console.print(f"Abort signal path: {abort_signal_path(trial_dir)}")
+
+
+@jobs_app.command()
+def attach(
+    trial_id: Annotated[str, Argument(help="Trial id or trial directory path.")],
+    jobs_dir: Annotated[
+        Path,
+        Option(
+            "-o",
+            "--jobs-dir",
+            help="Directory containing Pier job results.",
+            rich_help_panel="Job Settings",
+        ),
+    ] = JobConfig.model_fields["jobs_dir"].default,
+    execute: Annotated[
+        bool,
+        Option(
+            "--execute/--print-only",
+            help="Execute ssh immediately, or only print the generated command.",
+            rich_help_panel="Interactive",
+        ),
+    ] = True,
+):
+    """Attach to a running interactive SSH trial."""
+    trial_dir = _resolve_trial_dir(trial_id, jobs_dir)
+    state = read_interactive_state(trial_dir)
+    if state is None:
+        raise ValueError(
+            f"No interactive state found at {trial_dir / 'interactive' / 'state.json'}."
+        )
+    if state.ssh is None:
+        raise ValueError(
+            "This interactive trial does not have SSH metadata. "
+            "Start it with the interactive-ssh agent."
+        )
+
+    console.print(f"Trial: {state.trial_id}")
+    if state.workspace_path:
+        console.print(f"Workspace: {state.workspace_path}")
+    console.print(f"SSH config: {state.ssh.ssh_config_path}")
+    console.print(f"SSH command: {state.ssh.command}")
+
+    if not execute:
+        return
+
+    os.execvp(
+        "ssh",
+        [
+            "ssh",
+            "-F",
+            state.ssh.ssh_config_path,
+            state.ssh.host_alias,
+        ],
+    )
+
+
+@jobs_app.command(name="ssh-proxy")
+def ssh_proxy(
+    trial_id: Annotated[str, Argument(help="Trial id or trial directory path.")],
+    jobs_dir: Annotated[
+        Path,
+        Option(
+            "-o",
+            "--jobs-dir",
+            help="Directory containing Pier job results.",
+            rich_help_panel="Job Settings",
+        ),
+    ] = JobConfig.model_fields["jobs_dir"].default,
+):
+    """Bridge OpenSSH ProxyCommand stdio to a running Docker interactive trial."""
+    trial_dir = _resolve_trial_dir(trial_id, jobs_dir)
+    state = read_interactive_state(trial_dir)
+    if state is None or state.container is None:
+        raise ValueError(
+            f"No Docker interactive container state found for trial {trial_id!r}."
+        )
+
+    container_id = state.container.container_id
+    inspect = subprocess.run(
+        ["docker", "inspect", "--format", "{{.State.Running}}", container_id],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if inspect.returncode != 0 or inspect.stdout.strip() != "true":
+        raise ValueError(
+            f"Docker container for trial {state.trial_id!r} is not running: "
+            f"{container_id}"
+        )
+
+    os.execvp(
+        "docker",
+        [
+            "docker",
+            "exec",
+            "-i",
+            "-u",
+            "root",
+            container_id,
+            "/usr/sbin/sshd",
+            "-i",
+            "-e",
+            "-f",
+            "/etc/ssh/sshd_config.pier",
+        ],
+    )
 
 
 @jobs_app.command()

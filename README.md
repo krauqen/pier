@@ -56,6 +56,63 @@ uv run pier run -p datasets/swebenchpro --n-tasks 10 --sample-seed 0
 
 Trials land under `jobs/<timestamp_or_name>/<trial_id>/`. See `pier run --help`, `pier job --help`, `pier critique --help`, and `pier view --help` for everything else.
 
+## External harness adapters
+
+Custom harnesses can run under Pier as normal agents by exposing a small
+`BaseAgent` adapter and loading it with `--agent-import-path`. Keep the harness
+logic in your own package; the adapter should install or mount the harness,
+write the task instruction somewhere stable, run the harness in the task
+environment, and record portable metadata in `trial_dir/lab/harness.json`.
+
+The agent receives `logs_dir`, which is normally `trial_dir/agent`. Use
+`write_harness_run_info_from_agent_logs_dir(logs_dir, HarnessRunInfo(...))` to
+write the metadata without depending on a benchmark-specific task format.
+
+```python
+from pier.agents.base import BaseAgent
+from pier.lab.metadata import HarnessRunInfo, write_harness_run_info_from_agent_logs_dir
+
+
+class BenchmaxxAgent(BaseAgent):
+    @staticmethod
+    def name() -> str:
+        return "benchmaxx"
+
+    def version(self) -> str | None:
+        return "0.1.0"
+
+    async def setup(self, environment):
+        pass
+
+    async def run(self, instruction, environment, context):
+        info = HarnessRunInfo(
+            harness_name="benchmaxx-agent",
+            harness_version=self.version(),
+            command="benchmaxx-agent run --instruction /logs/agent/instruction.md",
+            profile="default",
+            model=self.model_name,
+        )
+        write_harness_run_info_from_agent_logs_dir(self.logs_dir, info)
+        result = await environment.exec("benchmaxx-agent run ...")
+        context.metadata = {"harness": info.model_dump(mode="json")}
+        if result.return_code != 0:
+            raise RuntimeError("benchmaxx-agent failed")
+```
+
+For a runnable toy adapter, see
+`examples/agents/benchmaxx_harness.py`. From the repository root:
+
+```bash
+PYTHONPATH=$PWD uv run pier run \
+  -p examples/tasks/hello-world-no-internet \
+  --agent-import-path examples.agents.benchmaxx_harness:DummyBenchmaxxHarnessAgent \
+  --job-name dummy-harness \
+  --yes
+```
+
+That dummy adapter writes `/app/hello.txt`, passes the toy verifier, and writes
+`jobs/dummy-harness/<trial_id>/lab/harness.json`.
+
 ## Agent runtime configuration
 
 Use `agent.model_name` for trial metadata, `agent.env` for runtime env vars, and agent-specific `kwargs` for tool config. Pier's network allowlist also reads URLs out of those configs (Codex `config_toml`, OpenCode `opencode_config`, mini-swe `config_yaml`), so any base URL you set is allowlisted without code changes.

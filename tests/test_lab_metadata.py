@@ -6,11 +6,15 @@ from pier.lab.metadata import (
     LabSession,
     TaskExposureLabel,
     harness_metadata_path,
+    harness_metadata_path_from_agent_logs_dir,
     lab_dir,
     read_harness_run_info,
+    read_harness_run_info_from_agent_logs_dir,
     read_lab_session,
     session_metadata_path,
+    trial_dir_from_agent_logs_dir,
     write_harness_run_info,
+    write_harness_run_info_from_agent_logs_dir,
     write_lab_session,
 )
 
@@ -103,3 +107,16 @@ def test_metadata_path_helpers_accept_strings(tmp_path):
         session_metadata_path(trial_dir).parent
         == harness_metadata_path(trial_dir).parent
     )
+
+
+def test_harness_metadata_helpers_accept_agent_logs_dir(tmp_path):
+    trial_dir = tmp_path / "trial"
+    logs_dir = trial_dir / "agent"
+    info = HarnessRunInfo(harness_name="dummy")
+
+    path = write_harness_run_info_from_agent_logs_dir(logs_dir, info)
+
+    assert trial_dir_from_agent_logs_dir(logs_dir) == trial_dir
+    assert harness_metadata_path_from_agent_logs_dir(logs_dir) == path
+    assert path == trial_dir / "lab" / "harness.json"
+    assert read_harness_run_info_from_agent_logs_dir(logs_dir) == info

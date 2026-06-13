@@ -61,6 +61,21 @@ def harness_metadata_path(trial_dir: Path | str) -> Path:
     return lab_dir(trial_dir) / "harness.json"
 
 
+def trial_dir_from_agent_logs_dir(logs_dir: Path | str) -> Path:
+    """Return the trial directory for a normal Pier agent logs directory."""
+    logs_path = Path(logs_dir)
+    if logs_path.name != "agent":
+        raise ValueError(
+            "Agent logs directory must be the trial's 'agent' directory; "
+            f"got {logs_path}"
+        )
+    return logs_path.parent
+
+
+def harness_metadata_path_from_agent_logs_dir(logs_dir: Path | str) -> Path:
+    return harness_metadata_path(trial_dir_from_agent_logs_dir(logs_dir))
+
+
 def read_lab_session(trial_dir: Path | str) -> LabSession | None:
     return _read_metadata(session_metadata_path(trial_dir), LabSession)
 
@@ -75,6 +90,20 @@ def read_harness_run_info(trial_dir: Path | str) -> HarnessRunInfo | None:
 
 def write_harness_run_info(trial_dir: Path | str, info: HarnessRunInfo) -> Path:
     return _write_metadata(harness_metadata_path(trial_dir), info)
+
+
+def read_harness_run_info_from_agent_logs_dir(
+    logs_dir: Path | str,
+) -> HarnessRunInfo | None:
+    return _read_metadata(
+        harness_metadata_path_from_agent_logs_dir(logs_dir), HarnessRunInfo
+    )
+
+
+def write_harness_run_info_from_agent_logs_dir(
+    logs_dir: Path | str, info: HarnessRunInfo
+) -> Path:
+    return _write_metadata(harness_metadata_path_from_agent_logs_dir(logs_dir), info)
 
 
 def _read_metadata(

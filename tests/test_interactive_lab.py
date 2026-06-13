@@ -5,10 +5,17 @@ from pathlib import Path
 import pytest
 
 from pier.agents.factory import AgentFactory
-from pier.agents.interactive_lab import InteractiveLabAbortError, InteractiveLabAgent
-from pier.cli.jobs import _resolve_trial_dir
+from pier.agents.interactive_lab import (
+    InteractiveLabAbortError,
+    InteractiveLabAgent,
+    InteractiveSshAgent,
+)
+from pier.cli.jobs import _resolve_trial_dir, ssh_proxy
 from pier.environments.base import ExecResult
 from pier.lab.interactive import (
+    InteractiveContainerInfo,
+    InteractiveSshInfo,
+    InteractiveSshRequest,
     InteractiveState,
     InteractiveStatus,
     abort_signal_path,
@@ -30,6 +37,31 @@ class FakeEnvironment:
     async def exec(self, command: str):
         assert command == "pwd"
         return ExecResult(stdout="/workspace\n", return_code=0)
+
+
+class FakeSshEnvironment(FakeEnvironment):
+    def __init__(self):
+        self.request: InteractiveSshRequest | None = None
+
+    async def enable_interactive_ssh(self, request: InteractiveSshRequest):
+        self.request = request
+        return (
+            InteractiveSshInfo(
+                host_alias="pier-task__interactive",
+                user="agent",
+                workspace_path=request.workspace_path,
+                ssh_config_path="/tmp/ssh_config",
+                private_key_path="/tmp/id_ed25519",
+                public_key_path="/tmp/id_ed25519.pub",
+                known_hosts_path="/tmp/known_hosts",
+                command="ssh -F /tmp/ssh_config pier-task__interactive",
+            ),
+            InteractiveContainerInfo(
+                compose_project="task__interactive",
+                container_id="container123",
+                container_name="task__interactive-main-1",
+            ),
+        )
 
 
 @pytest.fixture
@@ -107,6 +139,37 @@ async def test_interactive_lab_agent_aborts_on_abort_signal(tmp_path):
     assert session.finished_at is not None
 
 
+@pytest.mark.anyio
+async def test_interactive_ssh_agent_writes_ssh_and_container_state(tmp_path):
+    trial_dir = tmp_path / "job" / "task__interactive"
+    context = AgentContext()
+    environment = FakeSshEnvironment()
+    agent = InteractiveSshAgent(
+        logs_dir=trial_dir / "agent",
+        trial_dir=trial_dir,
+        trial_id=trial_dir.name,
+        task_name="task",
+        poll_interval_sec=0.01,
+    )
+
+    task = asyncio.create_task(agent.run("fix it", environment, context))
+    state = await _wait_for_state(trial_dir)
+
+    assert environment.request is not None
+    assert environment.request.workspace_path == "/workspace"
+    assert state.ssh is not None
+    assert state.ssh.mode == "proxy_command"
+    assert state.ssh.user == "agent"
+    assert state.container is not None
+    assert state.container.container_id == "container123"
+    assert context.metadata["interactive"]["ssh"]["host_alias"] == (
+        "pier-task__interactive"
+    )
+
+    write_finish_signal(trial_dir)
+    await task
+
+
 def test_interactive_state_writes_stable_json(tmp_path):
     trial_dir = tmp_path / "trial"
     state = InteractiveState(
@@ -139,6 +202,64 @@ def test_finish_and_abort_signals_are_idempotent(tmp_path):
     assert write_abort_signal(trial_dir) == abort_signal_path(trial_dir)
     assert finish_signal_path(trial_dir).exists()
     assert abort_signal_path(trial_dir).exists()
+
+
+def test_ssh_proxy_execs_sshd_for_running_container(tmp_path, monkeypatch):
+    trial_dir = tmp_path / "jobs" / "job" / "trial-id"
+    state = InteractiveState(
+        trial_id="trial-id",
+        status=InteractiveStatus.WAITING,
+        workspace_path="/workspace",
+        container=InteractiveContainerInfo(
+            compose_project="trial-id",
+            container_id="container123",
+        ),
+    )
+    write_interactive_state(trial_dir, state)
+    exec_calls = []
+
+    class Completed:
+        returncode = 0
+        stdout = "true\n"
+
+    def fake_run(*args, **kwargs):
+        assert args[0] == [
+            "docker",
+            "inspect",
+            "--format",
+            "{{.State.Running}}",
+            "container123",
+        ]
+        return Completed()
+
+    def fake_execvp(file, args):
+        exec_calls.append((file, args))
+        raise RuntimeError("execvp called")
+
+    monkeypatch.setattr("pier.cli.jobs.subprocess.run", fake_run)
+    monkeypatch.setattr("pier.cli.jobs.os.execvp", fake_execvp)
+
+    with pytest.raises(RuntimeError, match="execvp called"):
+        ssh_proxy("trial-id", jobs_dir=tmp_path / "jobs")
+
+    assert exec_calls == [
+        (
+            "docker",
+            [
+                "docker",
+                "exec",
+                "-i",
+                "-u",
+                "root",
+                "container123",
+                "/usr/sbin/sshd",
+                "-i",
+                "-e",
+                "-f",
+                "/etc/ssh/sshd_config.pier",
+            ],
+        )
+    ]
 
 
 def test_resolve_trial_dir_finds_trial_by_id(tmp_path):

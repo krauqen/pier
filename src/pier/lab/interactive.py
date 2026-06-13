@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import TypeVar
+from typing import Literal, TypeVar
 
 from pydantic import BaseModel, Field
 
@@ -23,6 +23,34 @@ class InteractiveSignal(str, Enum):
     ABORT = "abort"
 
 
+class InteractiveSshRequest(BaseModel):
+    user: str | None = None
+    workspace_path: str | None = None
+    transport: Literal["proxy_command"] = "proxy_command"
+    public_key_path: str | None = None
+    allow_root_login: bool = False
+
+
+class InteractiveSshInfo(BaseModel):
+    mode: Literal["proxy_command"] = "proxy_command"
+    host_alias: str
+    user: str
+    port: int | None = None
+    workspace_path: str | None = None
+    ssh_config_path: str
+    private_key_path: str | None = None
+    public_key_path: str
+    known_hosts_path: str
+    command: str
+
+
+class InteractiveContainerInfo(BaseModel):
+    compose_project: str
+    service: str = "main"
+    container_id: str
+    container_name: str | None = None
+
+
 class InteractiveState(BaseModel):
     schema_version: int = 1
     trial_id: str
@@ -33,6 +61,8 @@ class InteractiveState(BaseModel):
     finish_signal_path: str | None = None
     abort_signal_path: str | None = None
     environment: dict[str, str | None] = Field(default_factory=dict)
+    ssh: InteractiveSshInfo | None = None
+    container: InteractiveContainerInfo | None = None
 
 
 _StateModel = TypeVar("_StateModel", bound=BaseModel)
@@ -68,6 +98,8 @@ def update_interactive_state(
     *,
     status: InteractiveStatus,
     workspace_path: str | None = None,
+    ssh: InteractiveSshInfo | None = None,
+    container: InteractiveContainerInfo | None = None,
 ) -> InteractiveState | None:
     state = read_interactive_state(trial_dir)
     if state is None:
@@ -75,6 +107,10 @@ def update_interactive_state(
     state.status = status
     if workspace_path is not None:
         state.workspace_path = workspace_path
+    if ssh is not None:
+        state.ssh = ssh
+    if container is not None:
+        state.container = container
     write_interactive_state(trial_dir, state)
     return state
 

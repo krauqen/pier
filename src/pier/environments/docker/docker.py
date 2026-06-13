@@ -1,5 +1,6 @@
 import asyncio
 import asyncio.subprocess
+import json
 import os
 import re
 import shlex
@@ -30,6 +31,12 @@ from pier.environments.docker import (
     RESOURCES_COMPOSE_NAME,
     write_mounts_compose_file,
     write_resources_compose_file,
+)
+from pier.lab.interactive import (
+    InteractiveContainerInfo,
+    InteractiveSshInfo,
+    InteractiveSshRequest,
+    interactive_dir,
 )
 from pier.models.environment_type import EnvironmentType
 from pier.models.task.config import EnvironmentConfig, TaskOS
@@ -761,6 +768,301 @@ class DockerEnvironment(BaseEnvironment):
         return await self._run_docker_compose_command(
             exec_command, check=False, timeout_sec=timeout_sec
         )
+
+    async def enable_interactive_ssh(
+        self, request: InteractiveSshRequest
+    ) -> tuple[InteractiveSshInfo, InteractiveContainerInfo]:
+        if self._is_windows_container:
+            raise NotImplementedError(
+                "Interactive SSH is not yet supported for Windows containers."
+            )
+        if request.transport != "proxy_command":
+            raise ValueError("Docker interactive SSH currently supports proxy_command.")
+
+        ssh_user = self._resolve_interactive_ssh_user(request.user)
+        if ssh_user == "root" and not request.allow_root_login:
+            raise ValueError(
+                "Interactive SSH root login requires allow_root_login=true."
+            )
+
+        container_info = await self._interactive_container_info()
+        paths = self._prepare_interactive_ssh_files(
+            request=request,
+            ssh_user=ssh_user,
+        )
+
+        await self.upload_file(paths["authorized_keys"], "/tmp/pier_authorized_keys")
+        await self.upload_file(paths["sshd_config"], "/tmp/pier_sshd_config")
+        await self.upload_file(paths["host_key"], "/tmp/pier_ssh_host_ed25519_key")
+        await self.upload_file(
+            paths["host_key_pub"], "/tmp/pier_ssh_host_ed25519_key.pub"
+        )
+
+        workspace_path = request.workspace_path or self.task_env_config.workdir
+        await self._configure_interactive_ssh_container(
+            ssh_user=ssh_user,
+            workspace_path=workspace_path,
+        )
+
+        host_alias = f"pier-{_sanitize_docker_compose_project_name(self.session_id)}"
+        jobs_dir = self.trial_paths.trial_dir.parent.parent.resolve().absolute()
+        pier_cmd = shutil.which("pier") or "pier"
+        proxy_command = " ".join(
+            [
+                shlex.quote(pier_cmd),
+                "job",
+                "ssh-proxy",
+                shlex.quote(self.trial_paths.trial_dir.name),
+                "--jobs-dir",
+                shlex.quote(str(jobs_dir)),
+            ]
+        )
+        private_key_path = paths.get("private_key")
+        ssh_command_parts = ["ssh", "-F", str(paths["ssh_config"]), host_alias]
+        ssh_command = " ".join(shlex.quote(part) for part in ssh_command_parts)
+        ssh_config_lines = [
+            f"Host {host_alias}",
+            "  HostName pier-interactive",
+            f"  User {ssh_user}",
+        ]
+        if private_key_path is not None:
+            ssh_config_lines.extend(
+                [
+                    f"  IdentityFile {private_key_path}",
+                    "  IdentitiesOnly yes",
+                ]
+            )
+        ssh_config_lines.extend(
+            [
+                f"  ProxyCommand {proxy_command}",
+                "  StrictHostKeyChecking accept-new",
+                f"  UserKnownHostsFile {paths['known_hosts']}",
+                "",
+            ]
+        )
+        ssh_config = "\n".join(ssh_config_lines)
+        paths["ssh_config"].write_text(ssh_config, encoding="utf-8")
+
+        return (
+            InteractiveSshInfo(
+                host_alias=host_alias,
+                user=ssh_user,
+                workspace_path=workspace_path,
+                ssh_config_path=str(paths["ssh_config"]),
+                private_key_path=str(private_key_path) if private_key_path else None,
+                public_key_path=str(paths["public_key"]),
+                known_hosts_path=str(paths["known_hosts"]),
+                command=ssh_command,
+            ),
+            container_info,
+        )
+
+    def _resolve_interactive_ssh_user(self, requested_user: str | None) -> str:
+        if requested_user:
+            return str(requested_user)
+        if isinstance(self.default_user, str) and self.default_user:
+            return self.default_user
+        return "agent"
+
+    async def _interactive_container_info(self) -> InteractiveContainerInfo:
+        result = await self._run_docker_compose_command(["ps", "-q", "main"])
+        container_id = (result.stdout or "").strip()
+        if not container_id:
+            raise RuntimeError("Could not resolve running Docker container for main.")
+
+        inspect = await asyncio.create_subprocess_exec(
+            "docker",
+            "inspect",
+            "--format",
+            "{{json .Name}}",
+            container_id,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await inspect.communicate()
+        container_name: str | None = None
+        if inspect.returncode == 0 and stdout:
+            try:
+                container_name = json.loads(stdout.decode().strip()).lstrip("/")
+            except json.JSONDecodeError:
+                container_name = stdout.decode(errors="replace").strip().lstrip("/")
+
+        return InteractiveContainerInfo(
+            compose_project=_sanitize_docker_compose_project_name(self.session_id),
+            service="main",
+            container_id=container_id,
+            container_name=container_name,
+        )
+
+    def _prepare_interactive_ssh_files(
+        self,
+        *,
+        request: InteractiveSshRequest,
+        ssh_user: str,
+    ) -> dict[str, Path]:
+        state_dir = interactive_dir(self.trial_paths.trial_dir)
+        state_dir.mkdir(parents=True, exist_ok=True)
+        known_hosts = state_dir / "known_hosts"
+        known_hosts.touch(exist_ok=True)
+
+        private_key: Path | None = None
+        if request.public_key_path:
+            public_key = Path(request.public_key_path).expanduser().resolve()
+            if not public_key.is_file():
+                raise FileNotFoundError(f"SSH public key not found: {public_key}")
+            private_candidate = (
+                public_key.with_suffix("") if public_key.suffix == ".pub" else None
+            )
+            if private_candidate is not None and private_candidate.is_file():
+                private_key = private_candidate
+        else:
+            private_key = state_dir / "id_ed25519"
+            public_key = state_dir / "id_ed25519.pub"
+            if not private_key.exists() or not public_key.exists():
+                self._generate_ssh_key(private_key, f"pier {self.session_id}")
+            private_key.chmod(0o600)
+            public_key.chmod(0o644)
+
+        host_key_dir = state_dir / "host_keys"
+        host_key_dir.mkdir(parents=True, exist_ok=True)
+        host_key = host_key_dir / "ssh_host_ed25519_key"
+        host_key_pub = host_key_dir / "ssh_host_ed25519_key.pub"
+        if not host_key.exists() or not host_key_pub.exists():
+            self._generate_ssh_key(host_key, f"pier host {self.session_id}")
+        host_key.chmod(0o600)
+        host_key_pub.chmod(0o644)
+
+        authorized_keys = state_dir / "authorized_keys"
+        authorized_keys.write_text(
+            public_key.read_text(encoding="utf-8").strip() + "\n"
+        )
+        authorized_keys.chmod(0o600)
+
+        permit_root = (
+            "prohibit-password"
+            if ssh_user == "root" and request.allow_root_login
+            else "no"
+        )
+        sshd_config = state_dir / "sshd_config"
+        sshd_config.write_text(
+            "\n".join(
+                [
+                    "Port 22",
+                    "HostKey /etc/ssh/ssh_host_ed25519_key",
+                    "AuthorizedKeysFile .ssh/authorized_keys",
+                    "PasswordAuthentication no",
+                    "KbdInteractiveAuthentication no",
+                    "PubkeyAuthentication yes",
+                    f"PermitRootLogin {permit_root}",
+                    "AllowTcpForwarding no",
+                    "X11Forwarding no",
+                    "PermitTunnel no",
+                    "PermitTTY yes",
+                    "UsePAM no",
+                    "PidFile /run/sshd-pier.pid",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        result = {
+            "authorized_keys": authorized_keys,
+            "host_key": host_key,
+            "host_key_pub": host_key_pub,
+            "known_hosts": known_hosts,
+            "public_key": public_key,
+            "ssh_config": state_dir / "ssh_config",
+            "sshd_config": sshd_config,
+        }
+        if private_key:
+            result["private_key"] = private_key
+        return result
+
+    @staticmethod
+    def _generate_ssh_key(path: Path, comment: str) -> None:
+        if not shutil.which("ssh-keygen"):
+            raise RuntimeError(
+                "ssh-keygen is required to create per-trial SSH keys, but it "
+                "was not found on PATH."
+            )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            [
+                "ssh-keygen",
+                "-t",
+                "ed25519",
+                "-N",
+                "",
+                "-C",
+                comment,
+                "-f",
+                str(path),
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
+    async def _configure_interactive_ssh_container(
+        self,
+        *,
+        ssh_user: str,
+        workspace_path: str | None,
+    ) -> None:
+        user_q = shlex.quote(ssh_user)
+        workspace_q = shlex.quote(workspace_path) if workspace_path else ""
+        script = f"""
+set -euo pipefail
+command -v sshd >/dev/null 2>&1 || {{
+  echo 'Interactive SSH requested, but sshd is not installed in the task image.' >&2
+  exit 86
+}}
+if ! id {user_q} >/dev/null 2>&1; then
+  if command -v useradd >/dev/null 2>&1; then
+    useradd -m -s /bin/bash {user_q}
+  elif command -v adduser >/dev/null 2>&1; then
+    adduser -D -s /bin/bash {user_q}
+  else
+    echo 'Could not create interactive SSH user {ssh_user}.' >&2
+    exit 87
+  fi
+fi
+if command -v getent >/dev/null 2>&1; then
+  home_dir="$(getent passwd {user_q} | cut -d: -f6)"
+else
+  home_dir="$(awk -F: -v user={user_q} '$1 == user {{ print $6 }}' /etc/passwd)"
+fi
+if [ -z "$home_dir" ]; then
+  home_dir="/home/{ssh_user}"
+fi
+if [ {user_q} != root ] && command -v passwd >/dev/null 2>&1; then
+  passwd -d {user_q} >/dev/null 2>&1 || true
+fi
+mkdir -p /run/sshd "$home_dir/.ssh"
+cp /tmp/pier_authorized_keys "$home_dir/.ssh/authorized_keys"
+chmod 700 "$home_dir/.ssh"
+chmod 600 "$home_dir/.ssh/authorized_keys"
+chown -R {user_q} "$home_dir/.ssh"
+cp /tmp/pier_sshd_config /etc/ssh/sshd_config.pier
+cp /tmp/pier_ssh_host_ed25519_key /etc/ssh/ssh_host_ed25519_key
+cp /tmp/pier_ssh_host_ed25519_key.pub /etc/ssh/ssh_host_ed25519_key.pub
+chmod 600 /etc/ssh/ssh_host_ed25519_key
+chmod 644 /etc/ssh/ssh_host_ed25519_key.pub
+"""
+        if workspace_path:
+            script += f"""
+if [ -d {workspace_q} ]; then
+  chown -R {user_q} {workspace_q} || true
+fi
+"""
+        result = await self.exec(script, user="root")
+        if result.return_code != 0:
+            raise RuntimeError(
+                "Failed to configure interactive SSH in Docker container. "
+                f"Stdout: {result.stdout}. Stderr: {result.stderr}."
+            )
 
     async def attach(self) -> None:
         if self._is_windows_container:
