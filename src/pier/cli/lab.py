@@ -180,7 +180,11 @@ def interactive(
         bool,
         Option(
             "--allow-root-login/--no-allow-root-login",
-            help="Allow key-only root SSH login when --ssh-user root is used.",
+            help=(
+                "Allow key-only root SSH login when --ssh-user root is used "
+                "explicitly. Tasks whose default agent user is root may attach "
+                "as root without this flag."
+            ),
             rich_help_panel="Interactive",
         ),
     ] = False,

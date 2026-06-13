@@ -780,7 +780,10 @@ class DockerEnvironment(BaseEnvironment):
             raise ValueError("Docker interactive SSH currently supports proxy_command.")
 
         ssh_user = self._resolve_interactive_ssh_user(request.user)
-        if ssh_user == "root" and not request.allow_root_login:
+        root_login_allowed = request.allow_root_login or (
+            request.user is None and ssh_user == "root"
+        )
+        if ssh_user == "root" and not root_login_allowed:
             raise ValueError(
                 "Interactive SSH root login requires allow_root_login=true."
             )
@@ -789,6 +792,7 @@ class DockerEnvironment(BaseEnvironment):
         paths = self._prepare_interactive_ssh_files(
             request=request,
             ssh_user=ssh_user,
+            allow_root_login=root_login_allowed,
         )
 
         await self.upload_file(paths["authorized_keys"], "/tmp/pier_authorized_keys")
@@ -862,7 +866,7 @@ class DockerEnvironment(BaseEnvironment):
             return str(requested_user)
         if isinstance(self.default_user, str) and self.default_user:
             return self.default_user
-        return "agent"
+        return "root"
 
     async def _interactive_container_info(self) -> InteractiveContainerInfo:
         result = await self._run_docker_compose_command(["ps", "-q", "main"])
@@ -899,6 +903,7 @@ class DockerEnvironment(BaseEnvironment):
         *,
         request: InteractiveSshRequest,
         ssh_user: str,
+        allow_root_login: bool,
     ) -> dict[str, Path]:
         state_dir = interactive_dir(self.trial_paths.trial_dir)
         state_dir.mkdir(parents=True, exist_ok=True)
@@ -939,9 +944,7 @@ class DockerEnvironment(BaseEnvironment):
         authorized_keys.chmod(0o600)
 
         permit_root = (
-            "prohibit-password"
-            if ssh_user == "root" and request.allow_root_login
-            else "no"
+            "prohibit-password" if ssh_user == "root" and allow_root_login else "no"
         )
         sshd_config = state_dir / "sshd_config"
         sshd_config.write_text(

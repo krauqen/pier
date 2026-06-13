@@ -1,6 +1,7 @@
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -12,6 +13,7 @@ from pier.agents.interactive_lab import (
 )
 from pier.cli.jobs import _resolve_trial_dir, ssh_proxy
 from pier.environments.base import ExecResult
+from pier.environments.docker.docker import DockerEnvironment
 from pier.lab.interactive import (
     InteractiveContainerInfo,
     InteractiveSshInfo,
@@ -275,6 +277,46 @@ def test_resolve_trial_dir_reports_missing_jobs_dir(tmp_path):
         _resolve_trial_dir("trial-id", tmp_path / "missing")
 
 
+def test_docker_interactive_ssh_defaults_to_effective_task_user():
+    env = DockerEnvironment.__new__(DockerEnvironment)
+
+    env.default_user = None
+    assert env._resolve_interactive_ssh_user(None) == "root"
+
+    env.default_user = "ubuntu"
+    assert env._resolve_interactive_ssh_user(None) == "ubuntu"
+    assert env._resolve_interactive_ssh_user("agent") == "agent"
+
+
+def test_implicit_root_interactive_ssh_allows_key_only_root_login(
+    tmp_path, monkeypatch
+):
+    env = DockerEnvironment.__new__(DockerEnvironment)
+    env.session_id = "trial-id"
+    env.trial_paths = SimpleNamespace(trial_dir=tmp_path / "trial")
+    public_key = tmp_path / "id_ed25519.pub"
+    public_key.write_text("ssh-ed25519 testkey\n", encoding="utf-8")
+
+    def fake_generate_ssh_key(path: Path, comment: str) -> None:
+        path.write_text("private key\n", encoding="utf-8")
+        path.with_name(path.name + ".pub").write_text(
+            f"ssh-ed25519 generated {comment}\n",
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(env, "_generate_ssh_key", fake_generate_ssh_key)
+
+    paths = env._prepare_interactive_ssh_files(
+        request=InteractiveSshRequest(public_key_path=str(public_key)),
+        ssh_user="root",
+        allow_root_login=True,
+    )
+
+    assert "PermitRootLogin prohibit-password" in paths["sshd_config"].read_text(
+        encoding="utf-8"
+    )
+
+
 def test_interactive_agents_are_registered(tmp_path):
     for name in (AgentName.INTERACTIVE_LAB, AgentName.INTERACTIVE_SSH):
         agent = AgentFactory.create_agent_from_name(
@@ -289,7 +331,7 @@ def test_interactive_agents_are_registered(tmp_path):
         assert agent.name() == name.value
 
 
-def test_interactive_ssh_install_codex_links_codex_for_ssh_user(tmp_path):
+def test_interactive_ssh_install_codex_exposes_codex_for_ssh_user(tmp_path):
     agent = InteractiveSshAgent(
         logs_dir=tmp_path / "agent",
         trial_dir=tmp_path / "trial",
@@ -304,3 +346,4 @@ def test_interactive_ssh_install_codex_links_codex_for_ssh_user(tmp_path):
     assert install.steps[-1].user == "root"
     assert "/usr/local/bin/codex" in install.steps[-1].run
     assert "find /root /home/agent" in install.steps[-1].run
+    assert 'cp "$real_path" "/usr/local/bin/$bin"' in install.steps[-1].run

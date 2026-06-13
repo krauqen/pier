@@ -277,7 +277,14 @@ class InteractiveSshAgent(InteractiveLabAgent):
                         '    bin_path="$(find /root /home/agent -path \'*/bin/\'"$bin" -type f -perm /111 2>/dev/null | head -n 1)"; '
                         "  fi; "
                         '  if [ -n "$bin_path" ]; then '
-                        '    ln -sf "$bin_path" "/usr/local/bin/$bin"; '
+                        '    real_path="$(readlink -f "$bin_path" 2>/dev/null || printf "%s" "$bin_path")"; '
+                        '    if case "$real_path" in /root/*) true;; *) false;; esac; then '
+                        '      rm -f "/usr/local/bin/$bin"; '
+                        '      cp "$real_path" "/usr/local/bin/$bin"; '
+                        '      chmod 755 "/usr/local/bin/$bin"; '
+                        '    elif [ "$real_path" != "/usr/local/bin/$bin" ]; then '
+                        '      ln -sf "$real_path" "/usr/local/bin/$bin"; '
+                        "    fi; "
                         "  fi; "
                         "done; "
                         "test -x /usr/local/bin/codex"
