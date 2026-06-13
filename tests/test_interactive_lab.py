@@ -287,3 +287,20 @@ def test_interactive_agents_are_registered(tmp_path):
 
         assert isinstance(agent, InteractiveLabAgent)
         assert agent.name() == name.value
+
+
+def test_interactive_ssh_install_codex_links_codex_for_ssh_user(tmp_path):
+    agent = InteractiveSshAgent(
+        logs_dir=tmp_path / "agent",
+        trial_dir=tmp_path / "trial",
+        trial_id="trial",
+        task_name="task",
+        install_codex=True,
+    )
+
+    install = agent.install_spec()
+
+    assert install.cache_key == "interactive-ssh-openssh-codex"
+    assert install.steps[-1].user == "root"
+    assert "/usr/local/bin/codex" in install.steps[-1].run
+    assert "find /root /home/agent" in install.steps[-1].run

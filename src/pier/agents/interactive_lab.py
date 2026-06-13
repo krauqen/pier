@@ -266,6 +266,24 @@ class InteractiveSshAgent(InteractiveLabAgent):
         ]
         if self.install_codex:
             steps.extend(Codex(self.logs_dir).install_spec().steps)
+            steps.append(
+                InstallStep(
+                    user="root",
+                    run=(
+                        "set -euo pipefail; "
+                        "for bin in node codex; do "
+                        '  bin_path="$(command -v "$bin" 2>/dev/null || true)"; '
+                        '  if [ -z "$bin_path" ]; then '
+                        '    bin_path="$(find /root /home/agent -path \'*/bin/\'"$bin" -type f -perm /111 2>/dev/null | head -n 1)"; '
+                        "  fi; "
+                        '  if [ -n "$bin_path" ]; then '
+                        '    ln -sf "$bin_path" "/usr/local/bin/$bin"; '
+                        "  fi; "
+                        "done; "
+                        "test -x /usr/local/bin/codex"
+                    ),
+                )
+            )
         return AgentInstallSpec(
             agent_name=self.name(),
             version=self.version(),
