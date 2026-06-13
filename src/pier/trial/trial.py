@@ -18,6 +18,7 @@ from tenacity import (
 )
 
 from pier.agents.installed.base import BaseInstalledAgent, NonZeroAgentExitCodeError
+from pier.agents.interactive_lab import InteractiveLabAgent
 from pier.environments.base import HealthcheckError
 from pier.environments.factory import EnvironmentFactory
 from pier.models.agent.context import AgentContext
@@ -40,6 +41,7 @@ from pier.models.trial.result import (
     TrialResult,
 )
 from pier.models.verifier.result import VerifierResult
+from pier.lab.interactive import InteractiveStatus, update_interactive_state
 from pier.trial.hooks import TrialEvent, TrialHookEvent
 from pier.trial.execution import (
     AgentSetupTimeoutError,
@@ -310,6 +312,7 @@ class Trial:
 
     async def _run_verification(self) -> None:
         await self._invoke_hooks(TrialEvent.VERIFICATION_START)
+        self._update_interactive_status(InteractiveStatus.VERIFYING)
 
         self.result.verifier = TimingInfo(started_at=datetime.now(timezone.utc))
 
@@ -466,6 +469,16 @@ class Trial:
 
         self.result.finished_at = datetime.now(timezone.utc)
         self.result.n_agent_steps = self.result.agent_step_count()
+        if isinstance(self._agent, InteractiveLabAgent):
+            if self.result.exception_info is None:
+                final_status = InteractiveStatus.COMPLETE
+            elif (
+                self.result.exception_info.exception_type == "InteractiveLabAbortError"
+            ):
+                final_status = InteractiveStatus.ABORTED
+            else:
+                final_status = InteractiveStatus.ERROR
+            self._update_interactive_status(final_status)
 
         self._trial_paths.result_path.write_text(self.result.model_dump_json(indent=4))
 
@@ -501,6 +514,11 @@ class Trial:
             agent_result.n_agent_steps = _agent_step_count_from_trajectory_path(
                 self._trial_paths.agent_dir / "trajectory.json"
             )
+
+    def _update_interactive_status(self, status: InteractiveStatus) -> None:
+        if not isinstance(self._agent, InteractiveLabAgent):
+            return
+        update_interactive_state(self._trial_paths.trial_dir, status=status)
 
     def _create_step_dirs(self, step_name: str) -> tuple[Path, Path]:
         """Create and return (agent_dir, verifier_dir) for a step."""

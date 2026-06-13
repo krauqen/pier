@@ -168,6 +168,18 @@ class TrialExecution:
                 "trial_paths": trial_paths,
                 "agent_timeout_sec": agent_timeout_sec,
             }
+        elif agent_config.name in {
+            AgentName.INTERACTIVE_LAB.value,
+            AgentName.INTERACTIVE_SSH.value,
+        }:
+            extra_kwargs = {
+                "trial_dir": trial_paths.trial_dir,
+                "trial_id": trial_paths.trial_dir.name,
+                "task_name": task.name,
+                "dataset_path": (
+                    str(task.task_dir.parent) if task.task_dir.parent else None
+                ),
+            }
         if task.config.environment.mcp_servers:
             extra_kwargs["mcp_servers"] = task.config.environment.mcp_servers
         if task.config.environment.skills_dir:

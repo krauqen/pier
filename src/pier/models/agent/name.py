@@ -4,6 +4,8 @@ from enum import Enum
 class AgentName(str, Enum):
     ORACLE = "oracle"
     NOP = "nop"
+    INTERACTIVE_LAB = "interactive-lab"
+    INTERACTIVE_SSH = "interactive-ssh"
     CLAUDE_CODE = "claude-code"
     CLAUDE_REMOTE = "claude-remote"
     CODEX = "codex"

@@ -9,10 +9,18 @@ import yaml
 from dotenv import dotenv_values, load_dotenv
 from rich.console import Console
 from rich.table import Table
-from typer import Option, Typer
+from typer import Argument, Option, Typer
 
 from pier.cli.host_env import confirm_host_env_access
 from pier.cli.utils import parse_env_vars, parse_kwargs, run_async
+from pier.lab.interactive import (
+    abort_signal_path,
+    finish_signal_path,
+    read_interactive_state,
+    write_abort_signal,
+    write_finish_signal,
+)
+from pier.lab.metadata import TaskExposureLabel
 from pier.models.agent.name import AgentName
 from pier.models.environment_type import EnvironmentType
 from pier.models.job.config import (
@@ -34,6 +42,42 @@ jobs_app = Typer(
     no_args_is_help=True, context_settings={"help_option_names": ["-h", "--help"]}
 )
 console = Console()
+
+
+def _load_job_config(config_path: Path | None) -> JobConfig:
+    if config_path is None:
+        return JobConfig()
+    if config_path.suffix == ".yaml":
+        return JobConfig.model_validate(yaml.safe_load(config_path.read_text()))
+    if config_path.suffix == ".json":
+        return JobConfig.model_validate_json(config_path.read_text())
+    raise ValueError(f"Unsupported config file format: {config_path.suffix}")
+
+
+def _resolve_trial_dir(trial_id_or_path: str, jobs_dir: Path) -> Path:
+    candidate = Path(trial_id_or_path)
+    if candidate.is_dir():
+        return candidate
+
+    if not jobs_dir.is_dir():
+        raise ValueError(f"Jobs directory does not exist: {jobs_dir}")
+
+    matches = [
+        path
+        for job_dir in jobs_dir.iterdir()
+        if job_dir.is_dir()
+        for path in [job_dir / trial_id_or_path]
+        if path.is_dir()
+    ]
+    if not matches:
+        raise ValueError(f"Could not find trial {trial_id_or_path!r} under {jobs_dir}.")
+    if len(matches) > 1:
+        formatted = "\n".join(f"  {path}" for path in matches)
+        raise ValueError(
+            f"Multiple trials named {trial_id_or_path!r} found under {jobs_dir}:\n"
+            f"{formatted}"
+        )
+    return matches[0]
 
 
 def _format_duration(started_at: datetime | None, finished_at: datetime | None) -> str:
@@ -587,18 +631,7 @@ def start(
             raise SystemExit(1)
         load_dotenv(env_file, override=True)
 
-    base_config = None
-    if config_path is not None:
-        if config_path.suffix == ".yaml":
-            base_config = JobConfig.model_validate(
-                yaml.safe_load(config_path.read_text())
-            )
-        elif config_path.suffix == ".json":
-            base_config = JobConfig.model_validate_json(config_path.read_text())
-        else:
-            raise ValueError(f"Unsupported config file format: {config_path.suffix}")
-
-    config = base_config if base_config is not None else JobConfig()
+    config = _load_job_config(config_path)
 
     if job_name is not None:
         config.job_name = job_name
@@ -771,6 +804,333 @@ def start(
     signal.signal(signal.SIGTERM, _handle_sigterm)
 
     job, job_result = run_async(_run_job())
+
+
+@jobs_app.command()
+def interactive(
+    config_path: Annotated[
+        Path | None,
+        Option(
+            "-c",
+            "--config",
+            help="A job configuration path in yaml or json format.",
+            rich_help_panel="Config",
+            show_default=False,
+        ),
+    ] = None,
+    job_name: Annotated[
+        str | None,
+        Option(
+            "--job-name",
+            help="Name of the job (default: timestamp)",
+            rich_help_panel="Job Settings",
+            show_default=False,
+        ),
+    ] = None,
+    jobs_dir: Annotated[
+        Path | None,
+        Option(
+            "-o",
+            "--jobs-dir",
+            help="Directory to store job results",
+            rich_help_panel="Job Settings",
+            show_default=False,
+        ),
+    ] = None,
+    path: Annotated[
+        Path | None,
+        Option(
+            "-p",
+            "--path",
+            help="Path to a local task or dataset directory",
+            rich_help_panel="Dataset",
+            show_default=False,
+        ),
+    ] = None,
+    dataset_task_names: Annotated[
+        list[str] | None,
+        Option(
+            "-i",
+            "--include-task-name",
+            help="Task name to include from dataset (supports glob patterns)",
+            rich_help_panel="Dataset",
+            show_default=False,
+        ),
+    ] = None,
+    dataset_exclude_task_names: Annotated[
+        list[str] | None,
+        Option(
+            "-x",
+            "--exclude-task-name",
+            help="Task name to exclude from dataset (supports glob patterns)",
+            rich_help_panel="Dataset",
+            show_default=False,
+        ),
+    ] = None,
+    n_tasks: Annotated[
+        int | None,
+        Option(
+            "-l",
+            "--n-tasks",
+            help="Maximum number of tasks to run",
+            rich_help_panel="Dataset",
+            show_default=False,
+        ),
+    ] = None,
+    sample_seed: Annotated[
+        int | None,
+        Option(
+            "--sample-seed",
+            help="Seed for deterministic random task sampling/order.",
+            rich_help_panel="Dataset",
+            show_default=False,
+        ),
+    ] = None,
+    environment_force_build: Annotated[
+        bool | None,
+        Option(
+            "--force-build/--no-force-build",
+            help="Whether to force rebuild the environment",
+            rich_help_panel="Environment",
+            show_default=False,
+        ),
+    ] = None,
+    environment_delete: Annotated[
+        bool,
+        Option(
+            "--delete/--no-delete",
+            help="Whether to delete the environment after completion",
+            rich_help_panel="Environment",
+        ),
+    ] = False,
+    poll_interval_sec: Annotated[
+        float,
+        Option(
+            "--poll-interval-sec",
+            help="Seconds between finish/abort signal checks.",
+            rich_help_panel="Interactive",
+        ),
+    ] = 1.0,
+    wait_timeout_sec: Annotated[
+        float,
+        Option(
+            "--wait-timeout-sec",
+            help="Maximum time the interactive agent can wait.",
+            rich_help_panel="Interactive",
+        ),
+    ] = 86400.0,
+    task_exposure: Annotated[
+        TaskExposureLabel,
+        Option(
+            "--task-exposure",
+            help="Lab exposure label to record in lab/session.json.",
+            rich_help_panel="Interactive",
+        ),
+    ] = TaskExposureLabel.SEEN_INTERACTIVE,
+    operator: Annotated[
+        str | None,
+        Option(
+            "--operator",
+            help="Operator label to record in lab/session.json.",
+            rich_help_panel="Interactive",
+            show_default=False,
+        ),
+    ] = "human",
+    disable_verification: Annotated[
+        bool,
+        Option(
+            "--disable-verification/--enable-verification",
+            help="Disable task verification after finish.",
+            rich_help_panel="Job Settings",
+            show_default=False,
+        ),
+    ] = False,
+    quiet: Annotated[
+        bool,
+        Option(
+            "-q",
+            "--quiet",
+            "--silent",
+            help="Suppress individual trial progress displays",
+            rich_help_panel="Job Settings",
+            show_default=False,
+        ),
+    ] = False,
+    debug: Annotated[
+        bool,
+        Option(
+            "--debug",
+            help="Enable debug logging",
+            rich_help_panel="Job Settings",
+            show_default=False,
+        ),
+    ] = False,
+    yes: Annotated[
+        bool,
+        Option(
+            "-y",
+            "--yes",
+            help="Auto-confirm host environment variable access.",
+            rich_help_panel="Job Settings",
+        ),
+    ] = False,
+    env_file: Annotated[
+        Path | None,
+        Option(
+            "--env-file",
+            help="Path to a .env file to load into environment.",
+            rich_help_panel="Job Settings",
+        ),
+    ] = None,
+):
+    """Start a no-SSH interactive trial that waits for finish or abort."""
+    from pier.job import Job
+
+    if env_file is not None:
+        if not env_file.exists():
+            console.print(f"[red]❌ Env file not found: {env_file}[/red]")
+            raise SystemExit(1)
+        load_dotenv(env_file, override=True)
+
+    config = _load_job_config(config_path)
+    if job_name is not None:
+        config.job_name = job_name
+    if jobs_dir is not None:
+        config.jobs_dir = jobs_dir
+    if environment_force_build is not None:
+        config.environment.force_build = environment_force_build
+    config.environment.delete = environment_delete
+    config.n_concurrent_trials = 1
+    config.quiet = quiet
+    config.debug = debug
+    if disable_verification:
+        config.verifier.disable = True
+    config.agents = [
+        AgentConfig(
+            name=AgentName.INTERACTIVE_LAB,
+            override_timeout_sec=wait_timeout_sec,
+            kwargs={
+                "poll_interval_sec": poll_interval_sec,
+                "task_exposure": task_exposure.value,
+                "operator": operator,
+            },
+        )
+    ]
+
+    if path is not None:
+        task_paths = TaskPaths(path)
+        is_task = task_paths.is_valid(disable_verification=config.verifier.disable)
+        if is_task:
+            config.tasks = [TaskConfig(path=path)]
+            config.datasets = []
+        else:
+            config.tasks = []
+            config.datasets = [
+                DatasetConfig(
+                    path=path,
+                    task_names=dataset_task_names,
+                    exclude_task_names=dataset_exclude_task_names,
+                    n_tasks=n_tasks,
+                    sample_seed=sample_seed,
+                )
+            ]
+    elif (
+        dataset_task_names is not None
+        or dataset_exclude_task_names is not None
+        or n_tasks is not None
+        or sample_seed is not None
+    ):
+        raise ValueError("Cannot specify local dataset filters without --path.")
+
+    from pier.environments.factory import EnvironmentFactory
+
+    EnvironmentFactory.run_preflight(
+        type=config.environment.type,
+        import_path=config.environment.import_path,
+    )
+
+    explicit_env_file_keys: set[str] = set()
+    if env_file is not None:
+        explicit_env_file_keys = {
+            key for key in dotenv_values(env_file).keys() if key is not None
+        }
+
+    signal.signal(signal.SIGTERM, _handle_sigterm)
+
+    async def _run_job():
+        job = await Job.create(config)
+        confirm_host_env_access(
+            task_configs=job._task_configs,
+            agents=job.config.agents,
+            environment=job.config.environment,
+            verifier=job.config.verifier,
+            console=console,
+            explicit_env_file_keys=explicit_env_file_keys,
+            skip_confirm=yes,
+        )
+        job_result = await job.run()
+        console.print()
+        print_job_results_tables(job_result)
+        console.print("[bold]Job Info[/bold]")
+        console.print(f"Results written to {job._job_result_path}")
+        console.print(f"Inspect results by running `pier view {job.job_dir.parent}`")
+        return job, job_result
+
+    run_async(_run_job())
+
+
+@jobs_app.command()
+def finish(
+    trial_id: Annotated[str, Argument(help="Trial id or trial directory path.")],
+    jobs_dir: Annotated[
+        Path,
+        Option(
+            "-o",
+            "--jobs-dir",
+            help="Directory containing Pier job results.",
+            rich_help_panel="Job Settings",
+        ),
+    ] = JobConfig.model_fields["jobs_dir"].default,
+):
+    """Signal an interactive trial to finish and continue to verification."""
+    trial_dir = _resolve_trial_dir(trial_id, jobs_dir)
+    path = write_finish_signal(trial_dir)
+    state = read_interactive_state(trial_dir)
+    console.print(f"Wrote finish signal: {path}")
+    if state is None:
+        console.print(
+            f"[yellow]No interactive state found at {trial_dir / 'interactive' / 'state.json'}[/yellow]"
+        )
+    else:
+        console.print(f"Current status: {state.status.value}")
+    console.print(f"Abort signal path: {abort_signal_path(trial_dir)}")
+
+
+@jobs_app.command()
+def abort(
+    trial_id: Annotated[str, Argument(help="Trial id or trial directory path.")],
+    jobs_dir: Annotated[
+        Path,
+        Option(
+            "-o",
+            "--jobs-dir",
+            help="Directory containing Pier job results.",
+            rich_help_panel="Job Settings",
+        ),
+    ] = JobConfig.model_fields["jobs_dir"].default,
+):
+    """Signal an interactive trial to abort before verification."""
+    trial_dir = _resolve_trial_dir(trial_id, jobs_dir)
+    path = write_abort_signal(trial_dir)
+    state = read_interactive_state(trial_dir)
+    console.print(f"Wrote abort signal: {path}")
+    if state is None:
+        console.print(
+            f"[yellow]No interactive state found at {trial_dir / 'interactive' / 'state.json'}[/yellow]"
+        )
+    else:
+        console.print(f"Current status: {state.status.value}")
+    console.print(f"Finish signal path: {finish_signal_path(trial_dir)}")
 
 
 @jobs_app.command()

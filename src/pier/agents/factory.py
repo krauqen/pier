@@ -9,6 +9,7 @@ from pier.agents.installed.cursor_cli import CursorCli
 from pier.agents.installed.gemini_cli import GeminiCli
 from pier.agents.installed.mini_swe_agent import MiniSweAgent
 from pier.agents.installed.opencode import OpenCode
+from pier.agents.interactive_lab import InteractiveLabAgent, InteractiveSshAgent
 from pier.agents.nop import NopAgent
 from pier.agents.oracle import OracleAgent
 from pier.models.agent.name import AgentName
@@ -19,6 +20,8 @@ from pier.utils.env import resolve_env_vars
 class AgentFactory:
     _AGENTS: list[type[BaseAgent]] = [
         NopAgent,
+        InteractiveLabAgent,
+        InteractiveSshAgent,
         OracleAgent,
         ClaudeCode,
         ClaudeRemote,
