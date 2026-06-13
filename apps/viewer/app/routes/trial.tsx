@@ -62,6 +62,7 @@ import {
   fetchTrial,
   fetchTrialCritiques,
   fetchTrialCritiqueTrajectory,
+  fetchTrialLabMetadata,
   fetchTrialFile,
   fetchTrialLog,
   fetchVerifierOutput,
@@ -74,6 +75,7 @@ import type {
   RewardDetails,
   Step,
   TrialCritiqueDetail,
+  TrialLabMetadata,
   TrialResult,
 } from "~/lib/types";
 import { TrajectoryViewer } from "~/components/trajectory-viewer";
@@ -1950,6 +1952,114 @@ function StepSelector({
   );
 }
 
+function formatLabLabel(value: string): string {
+  return value.replace(/_/g, " ");
+}
+
+function LabBadges({ values }: { values: string[] }) {
+  if (values.length === 0) {
+    return <span>-</span>;
+  }
+  return (
+    <span className="flex flex-wrap justify-end gap-1">
+      {values.map((value) => (
+        <Badge key={value} variant="secondary" className="font-mono text-[11px]">
+          {value}
+        </Badge>
+      ))}
+    </span>
+  );
+}
+
+function LabMetadataCard({ metadata }: { metadata: TrialLabMetadata | null }) {
+  if (!metadata?.session && !metadata?.harness) {
+    return null;
+  }
+
+  const { session, harness } = metadata;
+
+  return (
+    <Card className="-mb-px -mt-px gap-3 py-4">
+      <CardHeader>
+        <CardTitle>Lab</CardTitle>
+      </CardHeader>
+      <CardContent>
+        {session && (
+          <>
+            <DetailRow
+              label="Exposure"
+              value={
+                <Badge variant="outline">
+                  {formatLabLabel(session.task_exposure)}
+                </Badge>
+              }
+              showBorder={false}
+            />
+            <DetailRow
+              label="Mode"
+              value={formatLabLabel(session.mode)}
+              className="font-mono text-xs"
+              showBorder={false}
+            />
+            {session.operator && (
+              <DetailRow
+                label="Operator"
+                value={session.operator}
+                className="font-mono text-xs"
+                showBorder={false}
+              />
+            )}
+            <DetailRow
+              label="Tools"
+              value={<LabBadges values={session.tools} />}
+              showBorder={false}
+            />
+            <DetailRow
+              label="Tags"
+              value={<LabBadges values={session.tags} />}
+              showBorder={false}
+            />
+          </>
+        )}
+        {harness && (
+          <>
+            <DetailRow
+              label="Harness"
+              value={harness.harness_name}
+              className="font-mono text-xs"
+              showBorder={false}
+            />
+            {harness.harness_version && (
+              <DetailRow
+                label="Version"
+                value={harness.harness_version}
+                className="font-mono text-xs"
+                showBorder={false}
+              />
+            )}
+            {harness.profile && (
+              <DetailRow
+                label="Profile"
+                value={harness.profile}
+                className="font-mono text-xs"
+                showBorder={false}
+              />
+            )}
+            {harness.model && (
+              <DetailRow
+                label="Model"
+                value={harness.model}
+                className="font-mono text-xs"
+                showBorder={false}
+              />
+            )}
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function TrialContent({
   trial,
   jobName,
@@ -1966,6 +2076,10 @@ function TrialContent({
   const { data: trajectory } = useQuery({
     queryKey: ["trajectory", jobName, trialName, step],
     queryFn: () => fetchTrajectory(jobName, trialName, step),
+  });
+  const { data: labMetadata = null } = useQuery({
+    queryKey: ["trial-lab-metadata", jobName, trialName],
+    queryFn: () => fetchTrialLabMetadata(jobName, trialName),
   });
 
   const trajectoryModel = trajectory?.agent.model_name ?? null;
@@ -2048,6 +2162,8 @@ function TrialContent({
         {hasSteps && (
           <StepsOverview steps={trial.step_results!} onSelect={onStepChange} />
         )}
+
+        <LabMetadataCard metadata={labMetadata} />
 
         <Card className="-mb-px -mt-px gap-3 py-4">
           <CardHeader>

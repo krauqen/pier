@@ -96,6 +96,47 @@ export interface TrialSummary {
   cost_usd: number | null;
   peak_context_tokens: number | null;
   agent_steps: number | null;
+  lab_metadata: TrialLabMetadata | null;
+}
+
+export type TaskExposureLabel =
+  | "unseen"
+  | "seen_interactive"
+  | "seen_logs_only"
+  | "seen_solution"
+  | "regression"
+  | "holdout";
+
+export interface LabSession {
+  schema_version: number;
+  mode: string;
+  task_name: string;
+  dataset_path: string | null;
+  task_exposure: TaskExposureLabel;
+  started_at: string | null;
+  finished_at: string | null;
+  workspace_path: string | null;
+  operator: string | null;
+  tools: string[];
+  followup_replay_job: string | null;
+  tags: string[];
+}
+
+export interface HarnessRunInfo {
+  schema_version: number;
+  harness_name: string;
+  harness_version: string | null;
+  harness_git_sha: string | null;
+  command: string | null;
+  config_hash: string | null;
+  profile: string | null;
+  base_agent: string | null;
+  model: string | null;
+}
+
+export interface TrialLabMetadata {
+  session: LabSession | null;
+  harness: HarnessRunInfo | null;
 }
 
 export interface CritiqueRunSummary {

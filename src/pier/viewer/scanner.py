@@ -3,9 +3,11 @@
 import logging
 from pathlib import Path
 
+from pier.lab.metadata import read_harness_run_info, read_lab_session
 from pier.models.job.config import JobConfig
 from pier.models.job.result import JobResult
 from pier.models.trial.result import TrialResult
+from pier.viewer.models import TrialLabMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -72,3 +74,24 @@ class JobScanner:
                 "Failed to parse trial result for %s/%s", job_name, trial_name
             )
             return None
+
+    def get_trial_lab_metadata(
+        self, job_name: str, trial_name: str
+    ) -> TrialLabMetadata | None:
+        """Load optional lab metadata stored beside a trial result."""
+        trial_dir = self.jobs_dir / job_name / trial_name
+        if not trial_dir.exists():
+            return None
+
+        try:
+            session = read_lab_session(trial_dir)
+            harness = read_harness_run_info(trial_dir)
+        except Exception:
+            logger.warning(
+                "Failed to parse lab metadata for %s/%s", job_name, trial_name
+            )
+            return None
+
+        if session is None and harness is None:
+            return None
+        return TrialLabMetadata(session=session, harness=harness)

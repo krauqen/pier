@@ -26,6 +26,7 @@ import type {
   TaskSummary,
   Trajectory,
   TrialCritiqueDetail,
+  TrialLabMetadata,
   TrialResult,
   TrialSummary,
   VerifierOutput,
@@ -579,6 +580,19 @@ export async function fetchTrial(
   );
   if (!response.ok) {
     throw new Error(`Failed to fetch trial: ${response.statusText}`);
+  }
+  return response.json();
+}
+
+export async function fetchTrialLabMetadata(
+  jobName: string,
+  trialName: string
+): Promise<TrialLabMetadata | null> {
+  const response = await fetch(
+    `${API_BASE}/api/jobs/${encodeURIComponent(jobName)}/trials/${encodeURIComponent(trialName)}/lab-metadata`
+  );
+  if (!response.ok) {
+    throw new Error(`Failed to fetch lab metadata: ${response.statusText}`);
   }
   return response.json();
 }

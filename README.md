@@ -113,6 +113,10 @@ PYTHONPATH=$PWD uv run pier run \
 That dummy adapter writes `/app/hello.txt`, passes the toy verifier, and writes
 `jobs/dummy-harness/<trial_id>/lab/harness.json`.
 
+For the full lab loop, including interactive SSH inspection, split files,
+exposure labels, harness replay, viewer inspection, and report generation, see
+`docs/content/docs/run-jobs/benchmaxx-lab.mdx`.
+
 ## Agent runtime configuration
 
 Use `agent.model_name` for trial metadata, `agent.env` for runtime env vars, and agent-specific `kwargs` for tool config. Pier's network allowlist also reads URLs out of those configs (Codex `config_toml`, OpenCode `opencode_config`, mini-swe `config_yaml`), so any base URL you set is allowlisted without code changes.

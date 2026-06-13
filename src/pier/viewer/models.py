@@ -8,6 +8,8 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
+from pier.lab.metadata import HarnessRunInfo, LabSession
+
 T = TypeVar("T")
 
 
@@ -73,6 +75,13 @@ class TaskSummary(BaseModel):
     avg_agent_steps: float | None = None
 
 
+class TrialLabMetadata(BaseModel):
+    """Optional lab metadata stored beside a trial result."""
+
+    session: LabSession | None = None
+    harness: HarnessRunInfo | None = None
+
+
 class TrialSummary(BaseModel):
     """Summary of a trial for list views."""
 
@@ -93,6 +102,7 @@ class TrialSummary(BaseModel):
     cost_usd: float | None = None
     peak_context_tokens: int | None = None
     agent_steps: int | None = None
+    lab_metadata: TrialLabMetadata | None = None
 
 
 class CritiqueRunSummary(BaseModel):

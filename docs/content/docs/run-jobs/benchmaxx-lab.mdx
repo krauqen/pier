@@ -1,0 +1,173 @@
+# Benchmaxx Lab Workflow
+
+Pier lab mode is a research loop for turning task inspection into a benchmark
+harness without changing Harbor task definitions:
+
+1. Open one exact task environment interactively.
+2. Inspect or solve it through SSH.
+3. Finish the trial so Pier runs the normal verifier.
+4. Move the useful lesson into an external harness.
+5. Replay the task non-interactively.
+6. Report seen, unseen, regression, and holdout results separately.
+
+Lab metadata lives beside normal trial outputs under `trial_dir/lab/`. Existing
+Pier jobs without those files still load normally.
+
+## Split Files
+
+Keep split files outside task definitions:
+
+```text
+lab/splits/
+  dev-seen.txt
+  dev-unseen.txt
+  regression.txt
+  holdout.txt
+```
+
+Each file is a newline-delimited list of task names. Blank lines and `#`
+comments are ignored. `pier lab interactive` and `pier lab replay` accept the
+same file through `--tasks-file` or `--split-file`.
+
+Recommended discipline:
+
+- Add every interactively opened task to `dev-seen.txt`.
+- Keep tasks inspected only through logs in `dev-seen.txt`, but label the run
+  `seen_logs_only`.
+- Move solved tasks that should never regress into `regression.txt`.
+- Keep `dev-unseen.txt` for transfer checks while iterating.
+- Keep `holdout.txt` untouched until a writeup milestone.
+
+## Interactive SSH Inspection
+
+Start an interactive trial with the same dataset and environment settings you
+would use for a normal run:
+
+```bash
+pier lab interactive \
+  -p ~/benchmarks/deepswe \
+  --include-task-name astropy__astropy-12345 \
+  --install-codex \
+  --task-exposure seen_interactive \
+  --operator human \
+  --job-name benchmaxx-interactive
+```
+
+For a split file:
+
+```bash
+pier lab interactive \
+  -p ~/benchmarks/deepswe \
+  --split-file lab/splits/dev-seen.txt \
+  --task-exposure seen_interactive \
+  --job-name benchmaxx-interactive
+```
+
+Pier writes `interactive/state.json` and `lab/session.json` under the trial
+directory, prints SSH attach instructions, and waits. Attach with:
+
+```bash
+pier lab attach TRIAL_ID
+```
+
+The generated SSH host drops you into the task workspace. Inspect, edit, and
+record notes as needed. Do not change `task.toml` or any task definition file to
+record lab status; use `--task-exposure` and split files instead.
+
+## Finish And Verify
+
+When inspection is complete, signal the trial from the Pier host:
+
+```bash
+pier lab finish TRIAL_ID
+```
+
+Pier continues the normal trial lifecycle and runs the task verifier unless the
+interactive job was started with `--disable-verification`. The verifier result,
+trial logs, artifacts, `interactive/state.json`, and `lab/session.json` remain
+in the normal job directory.
+
+If the inspection should stop without verification:
+
+```bash
+pier lab abort TRIAL_ID
+```
+
+Use abort for discarded debugging sessions, not for tasks that informed harness
+behavior.
+
+## External Harness Replay
+
+Keep harness logic in your own package and expose a Pier `BaseAgent` adapter.
+The adapter should write portable metadata to `trial_dir/lab/harness.json` with
+`write_harness_run_info_from_agent_logs_dir(logs_dir, HarnessRunInfo(...))`.
+
+Replay a task or split through the adapter:
+
+```bash
+PYTHONPATH=$PWD pier lab replay \
+  -p ~/benchmarks/deepswe \
+  --split-file lab/splits/regression.txt \
+  --agent-import-path benchmaxx.pier:BenchmaxxAgent \
+  --agent-kwarg profile=regression \
+  --job-name benchmaxx-replay-regression
+```
+
+The replay is a normal Pier run: task setup, sandboxing, verification, logs, and
+results all follow the same path as `pier run`. The difference is the lab
+metadata the adapter records for reporting and viewer inspection.
+
+## Exposure Labels
+
+Use these labels in `lab/session.json`:
+
+| Label | Use |
+| --- | --- |
+| `unseen` | No prior inspection; default for trials without lab metadata. |
+| `seen_interactive` | A human or exploratory agent opened the live task environment. |
+| `seen_logs_only` | The task was studied through prior logs, not a live workspace. |
+| `seen_solution` | The solution or equivalent patch was viewed. |
+| `regression` | A task kept to catch repeated harness failures. |
+| `holdout` | Reserved until a writeup or milestone evaluation. |
+
+Do not treat these as leaderboard purity labels. They are for honest analysis,
+iteration discipline, and public storytelling.
+
+## Report Generation
+
+Generate deterministic Markdown or JSON reports from one or more job
+directories:
+
+```bash
+pier lab report jobs/benchmaxx-interactive jobs/benchmaxx-replay-regression \
+  --out reports/benchmaxx-lab.md
+
+pier lab report jobs/benchmaxx-replay-regression \
+  --out reports/benchmaxx-lab.json
+```
+
+Reports group trials by exposure and include reward, exception type, agent,
+model, harness metadata, and absolute trial paths. Open the same jobs in the
+viewer for trajectories, logs, artifacts, and lab metadata:
+
+```bash
+pier view --jobs-dir jobs
+```
+
+Trial detail pages show the lab card when `lab/session.json` or
+`lab/harness.json` is present. Plain Pier trials are unchanged.
+
+## Reporting Discipline
+
+For each harness change, keep at least these buckets separate:
+
+- Baseline on `dev-seen.txt`.
+- Harness on `dev-seen.txt`.
+- Harness on `dev-unseen.txt`.
+- Harness on `regression.txt`.
+- Final milestone on `holdout.txt`.
+
+When a task moves from interactive inspection to harness replay, record the
+lesson in notes or your harness changelog, then let replay results carry the
+evidence. The useful story is not that every task was unseen; it is which
+inspected lessons transferred to new tasks and which regressions stayed fixed.

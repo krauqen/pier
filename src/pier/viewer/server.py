@@ -50,6 +50,7 @@ from pier.viewer.models import (
     TaskFilters,
     TaskSummary,
     TrialCritiqueDetail,
+    TrialLabMetadata,
     TrialSummary,
 )
 from pier.viewer.scanner import JobScanner
@@ -2899,6 +2900,7 @@ def _register_job_endpoints(app: FastAPI, jobs_dir: Path) -> None:
                     cost_usd=cost,
                     peak_context_tokens=peak_context_tokens,
                     agent_steps=agent_steps,
+                    lab_metadata=scanner.get_trial_lab_metadata(job_name, name),
                 )
             )
 
@@ -2927,6 +2929,22 @@ def _register_job_endpoints(app: FastAPI, jobs_dir: Path) -> None:
                 detail=f"Trial '{trial_name}' not found in job '{job_name}'",
             )
         return result
+
+    @app.get(
+        "/api/jobs/{job_name}/trials/{trial_name}/lab-metadata",
+        response_model=TrialLabMetadata | None,
+    )
+    def get_trial_lab_metadata(
+        job_name: str, trial_name: str
+    ) -> TrialLabMetadata | None:
+        """Get optional lab metadata for a trial."""
+        trial_dir = _validate_trial_path(job_name, trial_name)
+        if not trial_dir.exists():
+            raise HTTPException(
+                status_code=404,
+                detail=f"Trial '{trial_name}' not found in job '{job_name}'",
+            )
+        return scanner.get_trial_lab_metadata(job_name, trial_name)
 
     @app.get(
         "/api/jobs/{job_name}/trials/{trial_name}/critiques",
