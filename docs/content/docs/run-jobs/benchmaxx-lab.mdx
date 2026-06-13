@@ -48,6 +48,7 @@ pier lab interactive \
   -p ~/benchmarks/deepswe \
   --include-task-name astropy__astropy-12345 \
   --install-codex \
+  --apply-patch ~/patches/astropy-12345.diff \
   --task-exposure seen_interactive \
   --operator human \
   --job-name benchmaxx-interactive
@@ -86,6 +87,10 @@ Pier continues the normal trial lifecycle and runs the task verifier unless the
 interactive job was started with `--disable-verification`. The verifier result,
 trial logs, artifacts, `interactive/state.json`, and `lab/session.json` remain
 in the normal job directory.
+
+If `--apply-patch PATH` was set, Pier applies that local patch in the task
+workspace after `finish` and before starting the verifier. The applied patch and
+its stdout/stderr are recorded in the trial directory.
 
 If the inspection should stop without verification:
 

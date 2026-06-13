@@ -19,7 +19,7 @@ from tenacity import (
 
 from pier.agents.installed.base import BaseInstalledAgent, NonZeroAgentExitCodeError
 from pier.agents.interactive_lab import InteractiveLabAgent
-from pier.environments.base import HealthcheckError
+from pier.environments.base import BaseEnvironment, HealthcheckError
 from pier.environments.factory import EnvironmentFactory
 from pier.models.agent.context import AgentContext
 from pier.models.task.config import (
@@ -68,6 +68,8 @@ __all__ = [
 
 TrialHookCallback = Callable[[TrialHookEvent], Awaitable[None]]
 _MAX_VERIFIER_ENV_SESSION_ID_LEN = 63
+_PRE_VERIFICATION_PATCH_ARTIFACT = "pre-verification.patch"
+_PRE_VERIFICATION_PATCH_ENV_PATH = "/tmp/pier-pre-verification.patch"
 
 
 def _aggregate_step_rewards(
@@ -154,6 +156,45 @@ def _relocate_dir_contents(src: Path, dst: Path) -> None:
         shutil.move(str(item), dst / item.name)
 
 
+async def _apply_patch_file_to_environment(
+    *,
+    patch_path: Path,
+    trial_dir: Path,
+    environment: BaseEnvironment,
+    logger: logging.Logger,
+) -> Path:
+    local_patch = patch_path.expanduser()
+    if not local_patch.is_file():
+        raise FileNotFoundError(f"Patch file does not exist: {local_patch}")
+
+    trial_patch = trial_dir / _PRE_VERIFICATION_PATCH_ARTIFACT
+    if local_patch.resolve() != trial_patch.resolve():
+        shutil.copyfile(local_patch, trial_patch)
+
+    await environment.upload_file(trial_patch, _PRE_VERIFICATION_PATCH_ENV_PATH)
+    quoted_patch = shlex.quote(_PRE_VERIFICATION_PATCH_ENV_PATH)
+    result = await environment.exec(
+        f"git -c safe.directory=* apply --whitespace=nowarn {quoted_patch}",
+        timeout_sec=120,
+        user="root",
+    )
+
+    stdout_path = trial_dir / "pre-verification-patch-stdout.txt"
+    stderr_path = trial_dir / "pre-verification-patch-stderr.txt"
+    stdout_path.write_text(result.stdout or "", encoding="utf-8")
+    stderr_path.write_text(result.stderr or "", encoding="utf-8")
+
+    if result.return_code != 0:
+        raise RuntimeError(
+            "Failed to apply pre-verification patch "
+            f"{local_patch} (exit code {result.return_code}). "
+            f"See {stderr_path} for stderr."
+        )
+
+    logger.info("Applied pre-verification patch %s", local_patch)
+    return trial_patch
+
+
 class Trial:
     """
     Runs a trial of a given agent on an environment.
@@ -208,6 +249,7 @@ class Trial:
         )
         self._agent = self._execution.agent
         self._environment = self._execution.environment
+        self._pre_verification_patch_applied = False
 
         self._verifier_timeout_sec = min(
             config.verifier.override_timeout_sec
@@ -311,6 +353,7 @@ class Trial:
             self.result.agent_execution.finished_at = datetime.now(timezone.utc)
 
     async def _run_verification(self) -> None:
+        await self._apply_pre_verification_patch()
         await self._invoke_hooks(TrialEvent.VERIFICATION_START)
         self._update_interactive_status(InteractiveStatus.VERIFYING)
 
@@ -520,6 +563,21 @@ class Trial:
             return
         update_interactive_state(self._trial_paths.trial_dir, status=status)
 
+    async def _apply_pre_verification_patch(self) -> None:
+        if (
+            self._pre_verification_patch_applied
+            or self.config.pre_verification_patch is None
+        ):
+            return
+
+        await _apply_patch_file_to_environment(
+            patch_path=self.config.pre_verification_patch,
+            trial_dir=self._trial_paths.trial_dir,
+            environment=self._environment,
+            logger=self._logger,
+        )
+        self._pre_verification_patch_applied = True
+
     def _create_step_dirs(self, step_name: str) -> tuple[Path, Path]:
         """Create and return (agent_dir, verifier_dir) for a step."""
         agent_dir = self._trial_paths.step_agent_dir(step_name)
@@ -632,6 +690,7 @@ class Trial:
 
         step_result.verifier = TimingInfo(started_at=datetime.now(timezone.utc))
         try:
+            await self._apply_pre_verification_patch()
             await self._invoke_hooks(TrialEvent.VERIFICATION_START)
             await self._environment.reset_dirs(
                 remove_dirs=[env_paths.verifier_dir, env_paths.tests_dir],

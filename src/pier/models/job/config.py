@@ -230,6 +230,13 @@ class JobConfig(BaseModel):
     retry: RetryConfig = Field(default_factory=RetryConfig)
     environment: EnvironmentConfig = Field(default_factory=EnvironmentConfig)
     verifier: VerifierConfig = Field(default_factory=VerifierConfig)
+    pre_verification_patch: Path | None = Field(
+        default=None,
+        description=(
+            "Local patch file to apply inside the task workspace after agent "
+            "execution and before verification."
+        ),
+    )
     metrics: list[MetricConfig] = Field(default_factory=list)
     agents: list[AgentConfig] = Field(default_factory=lambda: [AgentConfig()])
     datasets: list[DatasetConfig] = Field(default_factory=list)

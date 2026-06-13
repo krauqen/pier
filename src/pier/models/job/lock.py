@@ -100,6 +100,7 @@ class TrialLock(BaseModel):
     agent: AgentConfig
     environment: EnvironmentConfig
     verifier: VerifierConfig
+    pre_verification_patch: Path | None = None
 
 
 class JobLock(BaseModel):
@@ -169,6 +170,7 @@ def _build_lock_trial(trial_config: TrialConfig) -> TrialLock:
         agent=trial_config.agent,
         environment=trial_config.environment,
         verifier=trial_config.verifier,
+        pre_verification_patch=trial_config.pre_verification_patch,
     )
 
 

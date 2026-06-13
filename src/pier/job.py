@@ -328,6 +328,7 @@ class Job:
                 environment_build_timeout_multiplier=self.config.environment_build_timeout_multiplier,
                 environment=self.config.environment,
                 verifier=self.config.verifier,
+                pre_verification_patch=self.config.pre_verification_patch,
                 artifacts=self.config.artifacts,
                 job_id=self._id,
             )

@@ -91,12 +91,14 @@ def test_lab_interactive_delegates_to_job_interactive_with_split_file(
         dataset_task_names=["task-a"],
         tasks_file=tasks_file,
         disable_verification=True,
+        pre_verification_patch=tmp_path / "fix.diff",
         yes=True,
     )
 
     assert calls[0]["path"] == tmp_path / "dataset"
     assert calls[0]["dataset_task_names"] == ["task-a", "task-b", "task-c"]
     assert calls[0]["disable_verification"] is True
+    assert calls[0]["pre_verification_patch"] == tmp_path / "fix.diff"
     assert calls[0]["yes"] is True
 
 

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -31,6 +32,7 @@ from pier.lab.interactive import (
 from pier.lab.metadata import TaskExposureLabel, read_lab_session
 from pier.models.agent.context import AgentContext
 from pier.models.agent.name import AgentName
+from pier.trial.trial import _apply_patch_file_to_environment
 
 
 class FakeEnvironment:
@@ -64,6 +66,35 @@ class FakeSshEnvironment(FakeEnvironment):
                 container_name="task__interactive-main-1",
             ),
         )
+
+
+class FakePatchEnvironment:
+    def __init__(self, return_code: int = 0):
+        self.return_code = return_code
+        self.uploads = []
+        self.commands = []
+
+    async def upload_file(self, source_path: Path | str, target_path: str):
+        self.uploads.append((Path(source_path), target_path))
+
+    async def exec(
+        self,
+        command: str,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout_sec: int | None = None,
+        user: str | int | None = None,
+    ):
+        self.commands.append(
+            {
+                "command": command,
+                "cwd": cwd,
+                "env": env,
+                "timeout_sec": timeout_sec,
+                "user": user,
+            }
+        )
+        return ExecResult(stdout="ok\n", stderr="", return_code=self.return_code)
 
 
 @pytest.fixture
@@ -193,6 +224,43 @@ def test_interactive_state_writes_stable_json(tmp_path):
 
     update_interactive_state(trial_dir, status=InteractiveStatus.VERIFYING)
     assert read_interactive_state(trial_dir).status == InteractiveStatus.VERIFYING
+
+
+@pytest.mark.anyio
+async def test_apply_patch_file_uploads_records_and_applies_before_verifier(tmp_path):
+    patch_path = tmp_path / "fix.diff"
+    patch_path.write_text("diff --git a/a.txt b/a.txt\n", encoding="utf-8")
+    trial_dir = tmp_path / "trial"
+    trial_dir.mkdir()
+    environment = FakePatchEnvironment()
+
+    recorded_patch = await _apply_patch_file_to_environment(
+        patch_path=patch_path,
+        trial_dir=trial_dir,
+        environment=environment,
+        logger=logging.getLogger("test"),
+    )
+
+    assert recorded_patch == trial_dir / "pre-verification.patch"
+    assert recorded_patch.read_text(encoding="utf-8") == patch_path.read_text(
+        encoding="utf-8"
+    )
+    assert environment.uploads == [(recorded_patch, "/tmp/pier-pre-verification.patch")]
+    assert environment.commands == [
+        {
+            "command": (
+                "git -c safe.directory=* apply --whitespace=nowarn "
+                "/tmp/pier-pre-verification.patch"
+            ),
+            "cwd": None,
+            "env": None,
+            "timeout_sec": 120,
+            "user": "root",
+        }
+    ]
+    assert (trial_dir / "pre-verification-patch-stdout.txt").read_text(
+        encoding="utf-8"
+    ) == "ok\n"
 
 
 def test_finish_and_abort_signals_are_idempotent(tmp_path):

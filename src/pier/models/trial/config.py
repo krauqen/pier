@@ -256,6 +256,13 @@ class TrialConfig(BaseModel):
     agent: AgentConfig = Field(default_factory=AgentConfig)
     environment: EnvironmentConfig = Field(default_factory=EnvironmentConfig)
     verifier: VerifierConfig = Field(default_factory=VerifierConfig)
+    pre_verification_patch: Path | None = Field(
+        default=None,
+        description=(
+            "Local patch file to apply inside the task workspace after agent "
+            "execution and before verification."
+        ),
+    )
     artifacts: list[str | ArtifactConfig] = Field(default_factory=list)
     job_id: UUID | None = None
 

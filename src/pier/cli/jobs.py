@@ -985,6 +985,18 @@ def interactive(
             show_default=False,
         ),
     ] = False,
+    pre_verification_patch: Annotated[
+        Path | None,
+        Option(
+            "--apply-patch",
+            help=(
+                "Local patch file to apply in the task workspace after "
+                "interactive finish and before verification."
+            ),
+            rich_help_panel="Interactive",
+            show_default=False,
+        ),
+    ] = None,
     quiet: Annotated[
         bool,
         Option(
@@ -1045,6 +1057,8 @@ def interactive(
     config.debug = debug
     if disable_verification:
         config.verifier.disable = True
+    if pre_verification_patch is not None:
+        config.pre_verification_patch = pre_verification_patch
     config.agents = [
         AgentConfig(
             name=AgentName.INTERACTIVE_SSH,
