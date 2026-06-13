@@ -1,5 +1,10 @@
 # Interactive SSH Mode Plan
 
+Project-level context: this file is now the low-level transport and lifecycle
+subplan for the broader workflow in `BENCHMAXX_LAB_PLAN.md`. Use this document
+when implementing interactive access; use `BENCHMAXX_LAB_PLAN.md` for product
+scope, metadata, harness replay, evaluation, and handoff sequencing.
+
 ## Goal
 
 Add a Pier workflow for benchmark tasks where Pier starts the task container,

@@ -1,5 +1,7 @@
 import json
 import shlex
+import shutil
+import subprocess
 import uuid
 from pathlib import Path
 
@@ -44,6 +46,74 @@ def test_claude_remote_command_is_interactive_with_remote_control(tmp_path: Path
     assert "--print" not in command
     assert "--output-format=stream-json" not in command
     assert "</dev/null" not in command
+
+
+AUTO_KICK = "(sleep 5; printf '/remote-control\\r' >&9) & "
+
+
+def test_claude_remote_auto_kick_runs_between_fifo_setup_and_session(tmp_path: Path):
+    agent = ClaudeRemote(logs_dir=tmp_path)
+
+    command = agent._build_claude_command("'fix'", "")
+
+    # The kick must be backgrounded (trailing "&") so it cannot delay the
+    # claude launch, and it must target fd 9 only after the FIFO is wired to
+    # it but before the session starts reading stdin from that same fd.
+    assert AUTO_KICK in command
+    assert command.index('exec 9<>') < command.index(AUTO_KICK)
+    assert command.index(AUTO_KICK) < command.index("script -qefc")
+    assert "<&9" in command.split("script -qefc")[1]
+
+
+def test_claude_remote_auto_kick_submits_with_carriage_return(tmp_path: Path):
+    agent = ClaudeRemote(logs_dir=tmp_path)
+
+    command = agent._build_claude_command("'fix'", "")
+
+    # The TUI submits on Enter (\r); a bare \n or no terminator would leave
+    # the slash command sitting unsubmitted in the input box.
+    kick_body = command.split("(sleep 5; ")[1].split(") &")[0]
+    assert kick_body == "printf '/remote-control\\r' >&9"
+
+
+def test_claude_remote_auto_kick_present_with_credentials(tmp_path: Path):
+    agent = ClaudeRemote(logs_dir=tmp_path, credentials_json=CREDENTIALS)
+
+    command = agent._build_claude_command("'fix'", "")
+
+    assert AUTO_KICK in command
+    # The cleanup trap must not displace the kick relative to the session.
+    assert command.index(AUTO_KICK) < command.index("script -qefc")
+
+
+def test_claude_remote_command_is_valid_bash(tmp_path: Path):
+    agent = ClaudeRemote(logs_dir=tmp_path, credentials_json=CREDENTIALS)
+
+    for command in (
+        agent._build_claude_command(shlex.quote("fix the bug"), ""),
+        agent._build_setup_command(),
+    ):
+        subprocess.run(["bash", "-n", "-c", command], check=True)
+
+
+def test_claude_remote_auto_kick_delivers_command_to_session_stdin(tmp_path: Path):
+    if shutil.which("script") is None:
+        pytest.skip("requires the util-linux script utility")
+    agent = ClaudeRemote(logs_dir=tmp_path)
+
+    command = agent._build_claude_command("'fix'", "")
+    prefix, sep, _ = command.partition("script -qefc")
+    assert sep
+
+    # Run the real FIFO + background-kick plumbing, but stand in for the
+    # claude session with a reader on the same fd. Shorten the delay; the
+    # 5s value is a startup grace period, not part of the mechanism.
+    probe = prefix.replace("sleep 5", "sleep 0.1") + "head -c 16 <&9"
+    # Capture bytes: text mode would translate the trailing \r to \n.
+    result = subprocess.run(["bash", "-c", probe], capture_output=True, timeout=10)
+
+    assert result.returncode == 0
+    assert result.stdout == b"/remote-control\r"
 
 
 def test_claude_remote_run_blocks_via_inherited_run(tmp_path: Path):
